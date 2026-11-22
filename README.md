@@ -39,6 +39,7 @@ hand-off takes 30–60 s and is spoken **later, out of band**, with no wake word
 |---|---|
 | `bridge.py` | the service: seat claim, VAD, turns, tools, hand-off, announcements |
 | `lanes.py` | answer lanes — `HttpLane` (sync) and `BusLane` (async), with the `sync_capable` flag |
+| `envelope.py` | the message contract (v1) for hand-offs and answers: TTL, correlation, typed errors |
 | `ha.py` | Home Assistant as a *tool*: fuzzy lookup, safe writes, imperative gate |
 | `probe.py` | frozen minimal transport probe (no AI) used to prove the seam |
 | `tools_test.py` | tool-calling reliability check (15 trials, 3 tools, 1 negative control) |

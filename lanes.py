@@ -96,7 +96,8 @@ class Lane:
 
     # asynchronous lanes
     async def submit(self, text: str, *, device: str | None = None,
-                     history: list[dict] | None = None) -> str:
+                     history: list[dict] | None = None,
+                     envelope: dict | None = None) -> str:
         raise NotAsyncCapable(f"lane {self.name!r} answers inside the turn; use ask()")
 
     def describe(self) -> str:
@@ -283,7 +284,8 @@ class BusLane(Lane):
             self._session = None
 
     async def submit(self, text: str, *, device: str | None = None,
-                     history: list[dict] | None = None) -> str:
+                     history: list[dict] | None = None,
+                     envelope: dict | None = None) -> str:
         """Queue the question. Returns the bus correlation_id to match later."""
         session = await self._get_session()
         device = device or "satellite"
@@ -299,12 +301,18 @@ class BusLane(Lane):
         # in the message: a general agent otherwise answers with a bulleted list.
         body += ("\n[Speakable answer requested: one or two short sentences, plain "
                  "text, no lists, no markdown, no URLs. Include the key result.]")
+        if envelope is not None:
+            # the envelope IS the contract; the bus only carries it
+            import json as _json
+            body = _json.dumps(envelope)
         payload = {
             "to": self.to,
             "type": self.msg_type,
             "subject": f"voice: {device}",
             "body": body,
         }
+        if envelope is not None:
+            payload["correlation_id"] = envelope.get("id")
         headers = {"X-Agent-Token": self._token(), "Content-Type": "application/json"}
         try:
             async with session.post(f"{self.bus_url}/send", json=payload,

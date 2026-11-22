@@ -766,6 +766,55 @@ them constraints on what an async lane may say:
 | an empty reply is spoken as if it were an answer | `bus-dispatch` puts `(empty reply)` in the body when the agent returns nothing; the bridge announced it verbatim | filter placeholders (`_is_real_answer`), retry with backoff, and after the attempt limit say *"Muse didn't come back with an answer on that one"* |
 | offering the tool triples the turn | system prompt + tool schema + time context = 349 prompt tokens at ~30 tok/s cold ≈ 8 s | trim to 221 tokens; steady state **3.8 s** with tools offered (measured over three identical calls) |
 
+### 8.3.1 The envelope (v1) — the message contract
+
+`envelope.py` defines what a hand-off and an answer *are*, so a bus message is a
+contract rather than a paragraph. It exists to make three observed failures
+impossible, not to be tidy.
+
+```json
+// request
+{ "v": 1, "type": "voice.handoff", "id": "<uuid>", "created_at": "...Z",
+  "ttl_s": 900, "from": "bridge", "to": "muse",
+  "device": {"name": "Satellite-1", "kind": "echo-dot"},
+  "reply_to": {"agent": "bridge", "bus_id": 1535},
+  "request": {"question": "...", "voice": true, "max_words": 30, "hint": "..."} }
+
+// answer
+{ "v": 1, "type": "voice.answer", "id": "<uuid>", "created_at": "...Z",
+  "from": "muse", "to": "bridge",
+  "correlation": "<the request's id>",     // the link; echo it
+  "in_reply_to": 1535,                      // belt and braces
+  "status": "ok", "answer": {"text": "...", "words": 24}, "error": null }
+```
+
+**The three rules, each from a failure:**
+
+1. `status=ok` requires non-empty `answer.text`; an agent that cannot answer sends
+   `status=error` with a code. The bus's `(empty reply)` placeholder was spoken
+   aloud once and must be unrepresentable.
+2. The answer echoes `correlation` (and/or `in_reply_to`), so a correct answer is
+   never left unmatched — the bug that cost four minutes of live testing.
+3. `ttl_s` travels with the request. A worker skips anything past its TTL; the
+   asker drops an answer that arrives late instead of speaking a stale fact.
+
+**Backward compatible:** `parse()` returns `None` for anything that is not an
+envelope, and the bridge falls back to plain text, so an agent that has not adopted
+it still works. `python3 envelope.py --selftest` runs 18 checks, including "empty
+ok-answer refused" and "stale hand-off expired".
+
+**Bus API facts an adopting agent needs** (verified, not read):
+
+- `POST /send` accepts `correlation_id` and `in_reply_to`; both are stored.
+- `correlation_id` is **unique per (correlation_id, recipient)** — reusing it for
+  several replies to the same agent is silently deduped. `in_reply_to` (the
+  request's bus id) is the collision-free link.
+
+**Adoption checklist (Muse's four steps):** match the hook on the envelope `type`,
+not the bus type; read `question`/`device`/`correlation`/`ttl_s` out of the
+envelope and skip expired ones; echo `correlation` in the reply; never post an
+empty body — post `status=error` instead.
+
 **Muse's side, answered 2026-11-21 (from Muse, who runs in Meta's cloud).** The
 open question above is now closed, and the answer is architectural, not a tuning
 detail:

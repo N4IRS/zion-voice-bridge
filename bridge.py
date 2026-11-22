@@ -51,6 +51,7 @@ import numpy as np
 from aioesphomeapi import APIClient
 from aioesphomeapi import VoiceAssistantEventType as ET
 
+import envelope as env_schema
 from ha import (DO_TOOL, HA_TOOLS, LOOKUP_TOOL, HaError, HomeAssistant,
                 looks_imperative, wants_ha_tools)
 from lanes import BusLane, HttpLane, LaneError, Lanes, NotSyncCapable
@@ -585,14 +586,24 @@ class Bridge:
             break
         question = (args.get("question") or original).strip()
         why = (args.get("why") or why or "").strip()
+        env = env_schema.make_handoff(
+            question,
+            device=self.args.device_name,
+            from_agent="bridge",
+            to=lane.name,
+            ttl_s=self.args.handoff_ttl_s,
+            max_words=30,
+            hint="answer in one or two spoken sentences",
+        )
         try:
-            corr = await lane.submit(question, device=self.args.device_name)
+            corr = await lane.submit(question, device=self.args.device_name, envelope=env)
         except LaneError as exc:
             log(f"[turn {turn}] handoff failed: {exc}")
             return "I couldn't reach Muse just now.", f"handoff error: {exc}"
         self.pending[corr] = {
             "device": self.args.device_name,
             "subject": f"voice: {self.args.device_name}",
+            "envelope_id": env["id"],
             "bus_id": getattr(lane, "last_message_id", None),
             "question": question,
             "why": why,
@@ -701,7 +712,32 @@ class Bridge:
                     entry = self.pending.get(corr) if corr else None
                     if not entry:
                         continue
-                    text = (msg.get("body") or "").strip()
+                    raw = (msg.get("body") or "").strip()
+                    env = env_schema.parse(raw)
+                    if env is not None:
+                        problems = env_schema.validate(env)
+                        if problems:
+                            log(f"handoff {corr}: malformed envelope, ignored: {problems}")
+                            continue
+                        if env.get("type") != env_schema.ANSWER:
+                            continue
+                        if env_schema.is_expired(env):
+                            log(f"handoff {corr}: answer arrived past its TTL, dropped")
+                            self.pending.pop(corr, None)
+                            self._save_pending()
+                            continue
+                        typed_error = env_schema.answer_error(env)
+                        if typed_error:
+                            code, message = typed_error
+                            log(f"handoff {corr}: agent reported {code}: {message}")
+                            self.pending.pop(corr, None)
+                            self._save_pending()
+                            await self._announce(
+                                f"{lane.spoken_name} couldn't answer that one.")
+                            continue
+                        text = env_schema.answer_text(env) or ""
+                    else:
+                        text = raw
                     if not self._is_real_answer(text):
                         entry["attempts"] += 1
                         log(f"handoff {corr}: empty/placeholder reply {text!r} "
@@ -753,6 +789,9 @@ class Bridge:
         answers the most recent. Exact ids always win when a responder does echo
         them (opencode does).
         """
+        env = env_schema.parse(msg.get("body") or "")
+        if env and env.get("correlation") in self.pending:
+            return env["correlation"]
         corr = str(msg.get("correlation_id") or "")
         if corr in self.pending:
             return corr
@@ -1017,6 +1056,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="message type Muse's hook filters on")
     p.add_argument("--device-name", default="Satellite-1",
                    help="device named in the handoff subject/body")
+    p.add_argument("--handoff-ttl-s", type=int, default=900,
+                   help="how long a hand-off stays answerable")
     p.add_argument("--handoff-max-attempts", type=int, default=12,
                    help="days-of-patience for a busy device before giving up")
     p.add_argument("--announce-timeout", type=float, default=30.0)
