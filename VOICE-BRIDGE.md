@@ -9,7 +9,7 @@ Amazon.
 It is a POC in the strict sense: every path below was driven by a real voice turn
 on real hardware, and the parts that are thin are named in §13 and §14 rather than
 hidden. The bus in particular is a home-grown store-and-forward queue that needs
-substantial work before anything depends on it (§14.1).
+substantial work before anything depends on it (§14).
 
 **Written:** 2026-11-21, on the machine it runs on.
 **Code:** `/srv/WorkSpace/voice-bridge/`
@@ -37,8 +37,9 @@ Zion when it answers from here, and hands work to Muse when it cannot.
 11. Reproduce from scratch
 12. Traps encountered (symptom → cause → fix)
 13. Known limits and what is not built
-14. Roadmap
-15. References
+14. The agent bus: hygiene, not transport — and what a production version needs
+15. Roadmap
+16. References
 
 ---
 
@@ -85,9 +86,10 @@ Home Assistant uses.
 | Dot speaks the reply | controller fetched 1 MB in 105 ms, device played 163 frames |
 | Clean failure paths | `no_speech`, `no_tts`, `tts_error` all observed and handled |
 
-**What is not built yet:** the handoff *trigger* (the lanes exist — §8.2–8.3 — but
-nothing yet decides when to leave the local lane), conversation memory across
-turns, systemd supervision, streaming TTS.
+**Built since this summary was first written:** the hand-off trigger and the Muse
+lane (§8.3), conversation memory (§8.11), numeric verification (§8.12), the clock as
+a host tool (§8.8), sentence-level streaming TTS (§8.9), Music Assistant (§8.5) and
+Home Assistant tools (§8.6), all under systemd (§10.3).
 
 ---
 
@@ -171,7 +173,12 @@ the piece we wanted to replace.
 | `nomic-embed-text` | 0.27 GB | F16 | Ollama | (not used here) |
 | whisper `base.en` | ~74 MB | int8 (ctranslate2) | `~/.cache` via faster-whisper | 0.6–0.9 s per 2.5–3.4 s utterance |
 | Silero VAD | ~2 MB | ONNX | bundled with faster-whisper | 0.19 s CPU per 20 s of audio |
-| Piper `en_US-lessac-medium` | 63 MB | ONNX | `/srv/WorkSpace/voice-bridge/voices/` | RTF 0.05 (11.1 s of speech in 0.44 s) |
+| Piper `en_US-hfc_female-medium` (**deployed**) | 63 MB | ONNX | `voices/` | RTF 0.03 (~5 s of speech in ~0.15 s) |
+| Piper `en_US-lessac-medium`, `-high`, `alba`, Kokoro-82M | — | — | `voices/`, `/tmp` | measured for §7.4.1; not deployed |
+
+The escalation side is not a model but an OmniRoute **combo**: `voice-escalation` →
+`cf/@cf/meta/llama-3.3-70b-instruct-fp8-fast` (0.45 s) → `gemini/gemini-2.5-flash`
+(1.34 s), both verified answering (§8.2).
 
 ### 3.4 Python environment
 
@@ -477,8 +484,8 @@ serves location, units, and session context.
 
 ### 7.4 Speech synthesis — Piper
 
-`en_US-lessac-medium`, 22050 Hz mono, ONNX on CPU. **RTF 0.05**: 11.1 s of speech
-in 0.44 s, 2.02 s in 95 ms. Writes a WAV into `captures/media/`, which the bridge
+Deployed voice: **`en_US-hfc_female-medium`** (§7.4.1 for why, and what else was
+measured), 22050 Hz mono, ONNX on CPU. **RTF 0.03**: ~5 s of speech in ~0.15 s. Writes a WAV into `captures/media/`, which the bridge
 serves over HTTP on `:8700` and hands to the controller as the `TTS_END` URL.
 
 The controller decodes whatever the URL returns with ffmpeg and applies its output
@@ -623,7 +630,7 @@ Three conclusions worth keeping:
 **The handoff itself is a tool call**, which is why it is cheap:
 
 ```
-handoff(question, why)     → "I can't do this properly; send it to the bigger model"
+handoff(question, needs)    → needs="reasoning" (cloud lane) or "data" (Muse)
 ```
 
 The local model calls it when it judges the job beyond it, and the tool argument
@@ -795,7 +802,7 @@ once could swap answers.
 **Built and working (2026-11-21).** The async lane is no longer a design:
 
 ```
-turn  → 3B calls handoff(question, why)  → BusLane.submit() → spoken ack → turn closes
+turn  → 3B calls handoff(question, needs)  → BusLane.submit() → spoken ack → turn closes
                                           ↓ correlation_id persisted
        poller every 5 s → inbox match → Piper → VoiceAssistantAnnounceRequest → spoken
 ```
@@ -925,7 +932,7 @@ durable.
 **Error codes.** Recommended: `no_data`, `unavailable`, `bad_question`, `timeout`,
 `internal`. Validation requires a *non-empty* code but does not restrict it to this
 set — an agent must not be rejected by an older bridge for inventing a code, so the
-bridge logs unknown codes rather than refusing them.
+the bridge logs unknown codes rather than refusing them.
 
 **Which id goes where — the one thing easy to get wrong:**
 
@@ -1106,18 +1113,7 @@ about antennas pays nothing for them.
 answer lane is set to the cloud lane, that data goes with the question. Local lane
 by default keeps it home.
 
-### 8.7 What the cloud lane is *not* for
-
-A cloud model has no clock and no weather either, so "what time is it" and
-"what's the weather" are **data** problems, not model problems — the right fix is
-a local tool (`clock()`, `weather()`) inside the local lane, not an escalation.
-Handoff is for *reasoning the local model cannot do*, not for facts it does not
-have. Keeping those two mechanisms separate is what stops the design turning into
-a pile of per-question special cases.
-
----
-
-### 8.7.1 Two escalations, not one — data vs reasoning
+### 8.7 Two escalations, not one — data vs reasoning
 
 The escalation ladder was wrong in a way that only showed once Muse was answering.
 There are two different escalations, and they go to different places:
@@ -1173,7 +1169,7 @@ Hedge routing follows the same split: *"I need Muse"* is a data deferral and goe
 her; *"I don't have real-time information"* is a knowledge gap and goes to the cloud
 lane first.
 
-### 8.7.2 The clock is a host tool, not model knowledge
+### 8.8 The clock is a host tool, not model knowledge
 
 Design decision (owner): the model should **ask the host** for the time rather than be
 handed it or bypassed. So `host_clock(kind)` is offered whenever the turn is temporal,
@@ -1215,7 +1211,7 @@ turn that used a tool, on the assumption the numbers came from the tool.
 the answer appears in the tool output, rounding allowed (`81.4` from `81.446` is fine,
 `84` from a date is not).
 
-### 8.7.3 Streaming TTS — what was possible, and what was built
+### 8.9 Streaming TTS — what was possible, and what was built
 
 **First, the measurement that decided the design.** The obvious approach — serve a
 growing HTTP response and let the controller play as bytes arrive — does not work
@@ -1263,7 +1259,18 @@ feature.
 - The sentence splitter requires ≥4 words before cutting, so "e.g." and abbreviations
   do not become announcements of one word.
 
-### 8.8 Conversation memory — the bridge owns it
+### 8.10 What the cloud lane is *not* for
+
+A cloud model has no clock and no weather either, so "what time is it" and
+"what's the weather" are **data** problems, not model problems — the right fix is
+a local tool (`clock()`, `weather()`) inside the local lane, not an escalation.
+Handoff is for *reasoning the local model cannot do*, not for facts it does not
+have. Keeping those two mechanisms separate is what stops the design turning into
+a pile of per-question special cases.
+
+---
+
+### 8.11 Conversation memory — the bridge owns it
 
 Every turn was stateless: Ollama keeps nothing, and the bus has no session concept,
 so *"and the other one?"* had no referent. The bridge now keeps the last few
@@ -1305,7 +1312,7 @@ less room than the 40-meter one"*, matched on the envelope correlation, and the 
 spoke it. A responder that reads the envelope needs no memory at all; a responder
 that keeps its own is an optimisation, and now demonstrably not a requirement.
 
-### 8.9 Numeric verification — the answer the assistant could get wrong
+### 8.12 Numeric verification — the answer the assistant could get wrong
 
 The local 3B is not usually wrong, but when it is wrong it is **confident**: asked
 what a 3:1 SWR reflects it said *"eight percent reflected, about half a dB loss"*,
@@ -1385,7 +1392,7 @@ wording**, so a rephrase is not recorded as a correction.
 
 ## 9. Observability and failure behaviour
 
-**Bridge log, per turn** (`bridge.log`): wake conversation id, speech start/end
+**Bridge log, per turn** (`journalctl --user -u voice-bridge`): wake conversation id, speech start/end
 with Silero statistics, captured audio length, transcript, LLM latency with prompt
 and reply token counts plus measured tok/s, TTS latency and speech duration, the
 serve URL, and the total.
@@ -1444,10 +1451,19 @@ Useful flags:
 | `--media-port` / `--media-host` | where reply WAVs are served (must be reachable by the controller) |
 | `--answer-lane` | which sync lane answers a turn (default `local`); an async lane is refused |
 | `--cloud-model` / `--cloud-url` | enable the `cloud` sync lane (OmniRoute; `auto/claude-sonnet`, `gemini/…`, `openai/…`) |
-| `--muse` / `--bus-url` / `--bus-token` / `--muse-agent` | configure the `muse` async lane (not yet wired into turns) |
+| `--muse` / `--bus-url` / `--bus-token` / `--muse-agent` | the async hand-off lane (Muse over the agent bus) |
+| `--handoff {off,ask,auto}` | the escalation policy: never / when asked or the model asks / also on a hedge |
+| `--handoff-ttl-s` | how long a hand-off stays answerable (default 900) |
+| `--verify {off,numbers,always}` | cloud-check a local answer that contains numbers |
+| `--stream-tts` / `--no-stream-tts` | speak sentence 1 while the rest is generating (default on) |
+| `--memory {off,auto,always}` · `--memory-turns` · `--memory-ttl-s` | conversation history: only for follow-ups (default), always, or never |
+| `--attribution {off,handoff,always}` · `--local-name` · `--muse-name` | say who answered ("Muse says: …") and the spoken names |
+| `--ha` / `--no-ha` · `--ha-url` · `--ha-token` | Home Assistant tools and credentials |
+| `--music` / `--no-music` · `--ma-url` · `--ma-token` · `--music-target` | Music Assistant tools and the default speaker |
+| `--bus-type` · `--device-name` | the bus message type Muse's hook filters on, and the device named in it |
 | `--lane-timeout` | per-lane HTTP timeout (default 25 s) |
-| `--once` | exit after one turn (waits for playback before exiting) |
-| `--seconds` | 0 = run until killed |
+| `--once` · `--seconds` | exit after one turn (waits for playback), or a bounded run (0 = forever) |
+| `--help` | the full list — there are ~50 flags, most with sane defaults |
 
 **Staged proving:** `--stt --tts` (no `--llm`) makes the Dot repeat what it heard —
 that isolates mic + whisper + Piper from the model. No `--tts` answers with a
@@ -1543,7 +1559,7 @@ Each of these cost a cycle, and each looks like something else.
 | Replies arrive but nothing is announced | the responder did not echo `correlation_id`/`in_reply_to`, so no id matched | match on subject + time as a fallback; ask responders to echo ids (§8.3) |
 | A remark switches a device on | a statement was executed as a command | gate writes on imperative phrasing (`looks_imperative`, §8.5) |
 | The hand-off asked the wrong question: "ask **news** what its icon is" | whisper decoded the agent's name as a common word | put proper nouns in the ASR prompt (`ASR_PROMPT`), same fix as "in petals" → "impedance" (§7.2) |
-| The Dot said "handoff needs data" | the model wrote tool-call syntax as text, and the phrasing "day of the week" matched no date pattern so no tool was offered | pattern extended; tool syntax in an answer is detected and never spoken (§8.7.2) |
+| The Dot said "handoff needs data" | the model wrote tool-call syntax as text, and the phrasing "day of the week" matched no date pattern so no tool was offered | pattern extended; tool syntax in an answer is detected and never spoken (§8.8) |
 | First follow-up that also needed a hand-off failed with `KeyError('text')` | chat history is `{"role","content"}`, the envelope wants `{"role","text"}` — two shapes, one confusion | `_handoff_context()` maps between them; `memory_test.py` asserts both shapes (memory_test.py was written after the bug, not before) |
 | Every envelope answer is dropped as "past its TTL" | `is_expired()` was applied to the *answer*, which carries no `ttl_s` and so fails safe as expired | age the pending entry against the request's TTL instead (§8.3.1) |
 | New instance dies with `OSError: [Errno 98] Address already in use` | the old bridge still holds media port 8700 — and a `kill $(ps ... awk ...)` can match *its own shell's command line* (which contains `bridge.py`) and kill the shell instead of the bridge | kill by explicit PID; verify with `ss -ltnp \| grep 8700` before restarting |
@@ -1552,14 +1568,14 @@ Each of these cost a cycle, and each looks like something else.
 
 ## 13. Known limits and what is not built
 
-Built and proven since the earlier draft of this list: conversation memory (§8.8),
+Built and proven since the earlier draft of this list: conversation memory (§8.11),
 the hand-off trigger and the Muse lane (§8.3), the systemd unit (§10.3), numeric
-verification (§8.9), the clock tool (§8.7.2), Music Assistant (§8.5) and Home
+verification (§8.12), the clock tool (§8.8), Music Assistant (§8.5) and Home
 Assistant tools (§8.6).
 
 What genuinely remains:
 
-- **Streaming TTS is sentence-level, not true streaming** (§8.7.3). The controller
+- **Streaming TTS is sentence-level, not true streaming** (§8.9). The controller
   buffers its fetch, so the only shape is one announcement per sentence: sentence 1
   goes out as the turn reply immediately and the rest follow as announcements. That
   saved 5.15 s on a two-sentence answer and costs nothing on a one-sentence one, but
@@ -1591,7 +1607,7 @@ What genuinely remains:
 
 ---
 
-## 14.1 The agent bus: hygiene, not transport
+## 14. The agent bus: hygiene, not transport
 
 **Conclusion (2026-11-21, after Muse reviewed the options): do not swap the
 transport.** The reasoning is structural and it survives scrutiny:
@@ -1617,7 +1633,7 @@ there, and it is the only thing that can carry traffic toward her. The table bel
 therefore a list of **hygiene**, not performance work — every row is cheap, and every
 row is a bug this project actually hit.
 
-## 14.1.1 The agent bus: what a production version needs
+### 14.1 What a production version needs
 
 The bus is the weakest component in the chain, and this project leaned on it hard
 enough to expose why. Observed failures during one evening, each with a symptom a
@@ -1647,36 +1663,39 @@ The cheapest three, and the ones that bit this project directly:
 | a TTL / expiry per message | a six-deep backlog of stale results inherited by a late consumer |
 | a distinct error status instead of a body like `(empty reply)` | a placeholder spoken aloud as if it were the answer (tonight) |
 
-## 14. Roadmap
+## 15. Roadmap
 
-**Next (small):** systemd unit + log rotation; conversation memory (last N turns
-in the prompt, `conversation_id` tracking); trim "hey jarvis" out of the
-transcript.
+**Everything the earlier draft listed as "next" is built and proven**: systemd
+supervision (§10.3), conversation memory (§8.11), the hand-off trigger (§8.7), the
+Muse lane with the envelope (§8.3), sentence-level streaming TTS (§8.9), the clock
+tool (§8.8), Home Assistant and Music Assistant tools (§8.6, §8.5), numeric
+verification (§8.12) and the OmniRoute combo (§8.2).
 
-**Then (the handoff — abstraction done, trigger not):** `lanes.py` exists with the
-`sync_capable` flag, an `HttpLane` answering turns today and a `BusLane` validated
-against a stub session. What is left is the decision layer: the `handoff(question,
-why)` tool, the explicit-ask and hedge backstops, the spoken cue, lane stickiness,
-the per-turn audit line, and — for the async lane — the acknowledgement utterance
-plus a poller that turns a late bus reply into an announcement.
+What is genuinely left, roughly in order of value:
 
-**Then (the Muse lane):** mint `bridge` on the bus, prove the async round trip
-against `opencode`, then flip `--muse-agent` to `muse` once Muse has a delivery
-path (§8.3).
-
-**Then (feel):** streaming TTS sentence-by-sentence — cuts 1–2 s on long replies
-and is the difference between "responsive" and "instant" for a big cloud answer.
-
-**Optional:** a `clock()` tool and a `weather()` tool in the local lane (data, not
-model); radio-state tools from MQTT (`:1883`) or the DVSwitch dashboard API, which
-is where this bench's most interesting local answers live.
-
-**Hardware, if ever:** any CUDA-class GPU would remove the model/quality
-trade-off entirely (7B at 30–40 tok/s instead of 4.4).
+1. **Two satellites.** Satellite-2 has been offline since 2026-11-06, so "loudest
+   wins" arbitration and the one-device-per-backend split are untested code paths,
+   not working features.
+2. **The device's data plane under long audio.** A 40 s clip (3.7 MB) stopped
+   `playback_stats` and then dropped the plane (`keepalive ping timeout`). Trimming
+   to ~30 words hides it; the cause is unknown and a longer answer would hit it.
+3. **A breaking-change path for the envelope.** Additive fields are proven safe and
+   self-describing; `v: 2` is undefined. A responder that meets one has no rule.
+4. **Radio-state tools.** MQTT (`:1883`, `p25-gateway/*`) or the DVSwitch dashboard
+   API: "who is linked", "is the parrot up", "what is the reflector doing". This is
+   the local data that would make it a *station* assistant rather than a general one.
+5. **"Hey Muse" wake word** via `oww_forge`, since the assistant answers to
+   `hey_jarvis` while being Zion and handing off to Muse.
+6. **Transcript retention.** Journald and Muse's bus history both keep everything;
+   no policy exists.
+7. **True mid-sentence streaming** — blocked on the controller playing a growing
+   body, which it demonstrably does not (§8.9). Not worth pursuing from this side.
+8. **Hardware, if ever:** any CUDA-class GPU removes the model/quality trade-off
+   (7B at 30–40 tok/s instead of 4.4) and would make Kokoro's naturalness free.
 
 ---
 
-## 15. References
+## 16. References
 
 **Read while building (authoritative):**
 
