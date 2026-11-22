@@ -23,7 +23,7 @@ echomuse-controller            device supervisor, satellite protocol, OTA, timer
    ▼
 voice-bridge                   this project — one Python process
    ├─ Silero VAD               endpointing (the backend's job, not the device's)
-   ├─ faster-whisper base.en   speech → text
+   ├─ faster-whisper small.en  speech → text
    ├─ Ollama qwen2.5:3b        local answers, tool calling
    ├─ Piper                    text → speech
    ├─ agent bus  (async)       hands questions to a cloud agent, announces the reply later
@@ -66,6 +66,8 @@ Each module self-tests without hardware or network where it can:
 .venv/bin/python verify_test.py     # 10 cases: when verification must not fire
 .venv/bin/python memory_test.py     # 9 checks: history shape and limits
 .venv/bin/python stream_test.py     # streaming: early handover, cancel on barge-in
+.venv/bin/python stt_test.py        # the transcription gate (skips if its clip is absent)
+.venv/bin/python poc.py             # the one-file version, for comparison
 .venv/bin/python lanes.py --selftest
 HA_URL=http://<ha>:8123 .venv/bin/python ha.py   # needs a live Home Assistant
 MA_URL=ws://<ma>:8095/ws .venv/bin/python ma.py  # needs Music Assistant + token

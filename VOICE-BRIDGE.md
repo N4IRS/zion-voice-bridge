@@ -71,7 +71,7 @@ Home Assistant uses.
         ▼
   voice-bridge (this project)          Python + asyncio, one process
         ├── Silero VAD                   endpointing (the backend's job)
-        ├── faster-whisper base.en       speech → text
+        ├── faster-whisper small.en      speech → text
         ├── Ollama qwen2.5:3b            text → reply   (optional cloud lane)
         └── Piper hfc_female-medium     reply → speech
         └── HTTP :8700                   serves the reply WAV the controller fetches
@@ -93,6 +93,16 @@ Home Assistant uses.
 lane (§8.3), conversation memory (§8.11), numeric verification (§8.12), the clock as
 a host tool (§8.8), sentence-level streaming TTS (§8.9), Music Assistant (§8.5) and
 Home Assistant tools (§8.6), all under systemd (§10.3).
+
+**Status 2026-11-22.** The clock and the workshop's formulas are answered in code at
+0.000 s instead of through two model passes (§8.13) — measured on the Dot at 14.50 s →
+0.795 s for *"what time is it"*. The tool gates were measured rather than argued and
+stay, because they are the only thing between a remark and a switched-on fan (§8.14).
+Transcription moved to `small.en` after `base.en` gave four different transcripts for
+one sentence (§8.15). `poc.py` is the same loop in one file for comparison (§8.16).
+And the "nothing leaves the LAN" claim is now measured with `ss` rather than inferred
+from the configuration: it was false until 2026-11-22, by one HuggingFace callout per
+start (§8.15).
 
 ---
 
@@ -204,7 +214,13 @@ av              19.0.2    (only used by faster-whisper's file decoding, which we
 | `bridge.py` | **the working backend.** Seat claim, VAD, STT, LLM, TTS, media server |
 | `probe.py` | frozen minimal transport test used to prove the seam (no AI) |
 | `stream_probe.py` | the test that showed the controller buffers a growing WAV instead of playing it |
+| `calc.py` | deterministic formulas: SWR, FSPL, ERP/EIRP, dipole lengths, days-until, 18 checks |
 | `clock.py` | the host clock as a tool: spoken time and date, 22 selftest checks |
+| `poc.py` | the whole voice loop in one file — four stages, no tools, no hand-off, no cloud |
+| `fastpath_test.py` | which questions are answered in code, and which must reach the model |
+| `guard_test.py` | a write cannot fire on a remark; tool syntax is never spoken |
+| `loop_test.py` | CPU work must not block the event loop (whisper and Piper run in threads) |
+| `stt_test.py` | the transcription confidence gate, and why `small.en` is the default |
 | `ma.py` | Music Assistant over its WebSocket API: play/transport/volume, `--selftest` |
 | `ha.py` | Home Assistant as a *tool* (§8.6): fuzzy lookup, allowlisted writes, imperative gate, `--selftest` |
 | `escalation_test.py` | routing policy: data→Muse vs reasoning→cloud, and hedge kinds |
@@ -1552,43 +1568,6 @@ prompt or routing problem, not a gating problem, and it is recorded rather than 
 — inventing a third regex to catch it would be the same class of guess the fast paths
 were built to remove.
 
-### 8.16 The POC: `poc.py`, one file, and the one line it was missing
-
-`poc.py` is the same voice loop stripped to four stages — whisper → Ollama → Piper →
-URL — with no tools, no hand-off, no memory, no verification, no streaming, no cloud,
-no vocabulary hints and no wake-word logic (the Dot does that). 280 lines including
-comments, and it works on the Dot: five turns in a row at 3.8–4.8 s after speech ended.
-
-What it keeps, because without them nothing works: its own endpointing (the Dot sends
-no VAD-end) and a URL in `TTS_END` with a server that stays up. What it does not keep is
-the safety work — with no hand-off tool, the model will invent rather than say it cannot.
-
-**The line it was missing:** `handle_start` must `return 0`. aioesphomeapi treats that
-return value as the port of a voice-assistant server it starts for the device; returning
-`None` made it log `Server could not be started` and send `error=True` to the Dot on
-every single wake. The device tolerated it and streamed anyway, so it looked like
-cosmetic noise — and the shipped bridge never showed the message because it had always
-returned 0, for no documented reason. That is now written down in both files.
-
-**Two results from the POC run worth keeping:**
-
-1. *A one-file POC still needs the no-speech guard.* A wake with no speech behind it
-   transcribed as `"Good time."` and the model answered `"The good time is 14:23 UTC."`
-   — the same hallucination the bridge produced at 07:59. Both now refuse before
-   transcribing: the POC logs `no speech crossed the gate; not asking the models` and
-   the bridge logs `no speech detected (0 ms < 160 ms)`.
-2. *`small.en` is much better than `base.en`, not perfect.* In the same run it heard
-   `"Is the office fan turned on?"` correctly and then, one turn later, `"Is he off of
-   his fanon?"` for the same question. 3 of 4 utterances were right. The remaining
-   mishearings are a property of this room and microphone placement, not of the model
-   choice that §8.15 settled, and no threshold or hotword list fixes them.
-
-Its regression clip lives in `.fixtures/stt-ref.wav`, gitignored: the repo is public and
-the clip is the operator's voice. Note that the clip saved is an *easy* one (both models
-get it right) because `captures/` had already been overwritten by the time it was kept —
-so `stt_test.py` pins stability on it and the gate logic separately, and the hard clip
-that started all this is gone.
-
 ### 8.15 Hearing: why `small.en`, and why the hybrid gate failed
 
 A local-only test on 2026-11-22 produced this on the Dot:
@@ -1667,6 +1646,43 @@ in the unit. Verified with the env var *absent* — no egress in 30 s, and whisp
 in 0.5 s instead of 1.0 s because it is not waiting on a network check. Any future
 "fully local" claim should be made by watching `ss -tnp` on the process, not by reading
 the config.
+
+### 8.16 The POC: `poc.py`, one file, and the one line it was missing
+
+`poc.py` is the same voice loop stripped to four stages — whisper → Ollama → Piper →
+URL — with no tools, no hand-off, no memory, no verification, no streaming, no cloud,
+no vocabulary hints and no wake-word logic (the Dot does that). 280 lines including
+comments, and it works on the Dot: five turns in a row at 3.8–4.8 s after speech ended.
+
+What it keeps, because without them nothing works: its own endpointing (the Dot sends
+no VAD-end) and a URL in `TTS_END` with a server that stays up. What it does not keep is
+the safety work — with no hand-off tool, the model will invent rather than say it cannot.
+
+**The line it was missing:** `handle_start` must `return 0`. aioesphomeapi treats that
+return value as the port of a voice-assistant server it starts for the device; returning
+`None` made it log `Server could not be started` and send `error=True` to the Dot on
+every single wake. The device tolerated it and streamed anyway, so it looked like
+cosmetic noise — and the shipped bridge never showed the message because it had always
+returned 0, for no documented reason. That is now written down in both files.
+
+**Two results from the POC run worth keeping:**
+
+1. *A one-file POC still needs the no-speech guard.* A wake with no speech behind it
+   transcribed as `"Good time."` and the model answered `"The good time is 14:23 UTC."`
+   — the same hallucination the bridge produced at 07:59. Both now refuse before
+   transcribing: the POC logs `no speech crossed the gate; not asking the models` and
+   the bridge logs `no speech detected (0 ms < 160 ms)`.
+2. *`small.en` is much better than `base.en`, not perfect.* In the same run it heard
+   `"Is the office fan turned on?"` correctly and then, one turn later, `"Is he off of
+   his fanon?"` for the same question. 3 of 4 utterances were right. The remaining
+   mishearings are a property of this room and microphone placement, not of the model
+   choice that §8.15 settled, and no threshold or hotword list fixes them.
+
+Its regression clip lives in `.fixtures/stt-ref.wav`, gitignored: the repo is public and
+the clip is the operator's voice. Note that the clip saved is an *easy* one (both models
+get it right) because `captures/` had already been overwritten by the time it was kept —
+so `stt_test.py` pins stability on it and the gate logic separately, and the hard clip
+that started all this is gone.
 
 ## 9. Observability and failure behaviour
 
@@ -1888,8 +1904,20 @@ What genuinely remains:
   one got *worse* (the cloud computed a quarter wave). Those five formula classes are
   now computed in code (§8.13), so verification only runs on arithmetic outside them.
   Anything not covered by `calc.py` still has the 5-in-6 reliability of a model check.
-- **The clock is now two model steps** (5.4 s for the time, 6.4 s for the date) —
-  slower than answering from the OS, by design: the model owns the decision.
+- **Transcription is good, not reliable.** `small.en` heard *"Is the office fan
+  turned on?"* correctly and, one turn later, *"Is he off of his fanon?"* for the same
+  question — 3 of 4 in one run (§8.16). A misheard clock question still falls through
+  to the model, so it is answered slowly rather than wrongly, and a misheard question
+  about the house reaches the tools with wrong words. This is the largest remaining
+  correctness risk in the system, and it is not a model-size problem that a flag fixes:
+  `base.en` was worse *and* unstable, and hotwords turned out to be a lottery (§8.15).
+- **The confidence gate does not work.** Re-hearing a low-confidence transcript with a
+  bigger model was tried and abandoned: the worst good transcript measured −0.634 and
+  the best bad one −0.715, which is too close to threshold (§8.15). The machinery is in
+  the tree behind `--whisper-fallback`, but nothing relies on it.
+- **`poc.py` deliberately has no safety layers.** It has no tools, no hand-off and no
+  verification, so it answers confidently about things it cannot know — by design, and
+  the reason the full bridge exists. Do not run it as the house assistant.
 - **`envelope.py` has no v2 path.** Additive fields are proven safe and discoverable
   (§8.3.1); nothing defines what a responder does with a breaking change.
 - **Muse's lane depends on her side polling.** The bridge queues, persists and
