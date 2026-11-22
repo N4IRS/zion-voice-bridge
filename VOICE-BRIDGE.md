@@ -208,6 +208,7 @@ av              19.0.2    (only used by faster-whisper's file decoding, which we
 | `ma.py` | Music Assistant over its WebSocket API: play/transport/volume, `--selftest` |
 | `ha.py` | Home Assistant as a *tool* (§8.6): fuzzy lookup, allowlisted writes, imperative gate, `--selftest` |
 | `escalation_test.py` | routing policy: data→Muse vs reasoning→cloud, and hedge kinds |
+| `stream_test.py` | streaming TTS: sentence 1 handed over early, cancellation on barge-in |
 | `voices/en_US-hfc_female-medium.onnx` | deployed Piper voice (lessac and others also present) |
 | `lanes.py` | lane abstraction: `HttpLane` (sync) and `BusLane` (async), the `sync_capable` flag, and `--selftest` |
 | `envelope.py` | the message contract (v1): request/answer, TTL, correlation, typed errors, `schema_summary()` |
@@ -1448,6 +1449,18 @@ and speak a short fallback rather than nothing.
 2. **Home Assistant must not hold the seat.** Disable the device's ESPHome entry
    in HA (Settings → Devices & Services → ESPHome → entry → Disable). Verify:
    `ss -tn | grep :16001` shows nothing, and the controller logs `HA disconnected`.
+3. **Credentials live in files, and the flags take paths.** Nothing secret appears on
+   the command line, so `ps aux` shows filenames, not tokens:
+
+   | credential | file (mode 600) | flag (a path) | if absent |
+   |---|---|---|---|
+   | Home Assistant long-lived token | `~/.config/voice-bridge/ha-token` | `--ha-token` | `ha_lookup`/`ha_do` refuse with a clear error |
+   | Music Assistant JWT | `~/.config/voice-bridge/ma-token` | `--ma-token` | `music_*` tools refuse |
+   | agent-bus token | `~/.agent-bus/tokens/<agent>` | `--bus-token` | the hand-off lane refuses to submit |
+
+   The only flag that would put a literal secret in the process list is `--cloud-key`,
+   and it is unused because OmniRoute runs with `REQUIRE_API_KEY=false`. If that ever
+   changes, put it in a systemd `EnvironmentFile=` rather than `ExecStart`.
 
 ### 10.2 Run
 
