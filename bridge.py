@@ -254,6 +254,14 @@ EXPLICIT_HANDOFF = (
 # instant service.
 ACK_TEMPLATE = "I've asked {name}. It may take about a minute."
 
+#: utterances that only make sense with the previous turn in view. Referential
+#: words only — an earlier version also treated any short question as a follow-up,
+#: which put history in front of "what is a balun?" for no benefit.
+FOLLOWUP_PREFIXES = ("and ", "what about", "how about", "the other", "same ",
+                     "do that", "do it", "that one", "one more")
+FOLLOWUP_MARKERS = (" it", " its", " that", " those", " them", " they",
+                    " the other", " instead", " again", " both", " either")
+
 
 class Brain:
     """whisper -> ollama -> piper, each stage optional."""
@@ -391,6 +399,8 @@ class Bridge:
         self.pending_path = os.path.join(args.outdir, "pending-handoffs.json")
         self.ha = (HomeAssistant(url=args.ha_url, token_file=args.ha_token)
                    if args.ha else None)
+        self.history: dict[str, list[dict]] = {}
+        self.conversation = ""
         self._reset()
 
     def _reset(self) -> None:
@@ -408,6 +418,7 @@ class Bridge:
     async def handle_start(self, conversation_id, flags, audio_settings, wake_word_phrase):
         self.turn += 1
         self._reset()
+        self.conversation = conversation_id or ""
         self.t_start = time.monotonic()
         log(f"[turn {self.turn}] wake: conversation={conversation_id[:8]} phrase={wake_word_phrase!r} flags={flags}")
         self.send_event(ET.VOICE_ASSISTANT_RUN_START)
@@ -474,6 +485,8 @@ class Bridge:
                 log(f"[turn {turn}] STT {stt_s * 1000:.0f} ms: {text!r}")
             else:
                 text, stt_s = "(no stt)", 0.0
+            if text:
+                self.remember(self.args.device_name, "user", text, self.conversation)
             if not text:
                 self.send_event(ET.VOICE_ASSISTANT_ERROR, {"code": "stt-no-text"})
                 self.send_event(ET.VOICE_ASSISTANT_RUN_END)
@@ -523,6 +536,8 @@ class Bridge:
             self.send_event(ET.VOICE_ASSISTANT_TTS_START)
             self.send_event(ET.VOICE_ASSISTANT_TTS_END, {"url": url})
             self.send_event(ET.VOICE_ASSISTANT_RUN_END)
+            if not handoff_note:
+                self.remember(self.args.device_name, "assistant", reply, self.conversation)
             log(f"[turn {turn}] reply handed over (+{(time.monotonic() - t0) * 1000:.0f} ms): {url}"
                 + (f"  [{handoff_note}]" if handoff_note else ""))
             self.finish("ok")
@@ -594,6 +609,10 @@ class Bridge:
             ttl_s=self.args.handoff_ttl_s,
             max_words=30,
             hint="answer in one or two spoken sentences",
+            conversation=self.conversation,
+            context=[{"role": t["role"], "text": t["text"]}
+                     for t in (self.history_for(self.args.device_name, question)
+                               if self.args.memory != "off" else [])],
         )
         try:
             corr = await lane.submit(question, device=self.args.device_name, envelope=env)
@@ -695,6 +714,7 @@ class Bridge:
             log(f"announce failed after {elapsed:.0f} s ({exc!r}); will retry")
             return False
         log(f"announced: {text!r} (success={getattr(finished, 'success', None)})")
+        self.remember(self.args.device_name, "assistant", text, self.conversation)
         return True
 
     async def _poll_handoffs(self) -> None:
@@ -837,6 +857,52 @@ class Bridge:
         except (OSError, json.JSONDecodeError):
             self.pending = {}
 
+    # ── conversation memory ─────────────────────────────────────────────────
+    #
+    # Ollama is stateless and the bus has no session concept, so the bridge owns
+    # the recent turns for a device and hands them out: to the local lane as
+    # chat history, and to a person's hand-off inside the request envelope.
+    # A responder may cache deeper state, but correctness never depends on it.
+
+    def _prune_history(self) -> None:
+        now = time.time()
+        ttl = self.args.memory_ttl_s
+        for key in list(self.history):
+            self.history[key] = [t for t in self.history[key] if now - t["ts"] <= ttl]
+            if not self.history[key]:
+                del self.history[key]
+
+    def remember(self, key: str, role: str, text: str, conversation: str = "") -> None:
+        if self.args.memory == "off" or not text.strip():
+            return
+        turns = self.history.setdefault(key, [])
+        turns.append({"role": role, "text": text.strip()[:400], "ts": time.time(),
+                      "conversation": conversation})
+        limit = self.args.memory_turns * 2
+        self.history[key] = turns[-limit:]
+
+    def history_for(self, key: str, utterance: str) -> list[dict]:
+        """Chat history worth paying prompt tokens for, or []."""
+        if self.args.memory == "off":
+            return []
+        self._prune_history()
+        turns = self.history.get(key) or []
+        if not turns:
+            return []
+        if self.args.memory == "auto" and not self._looks_like_followup(utterance):
+            return []
+        return [{"role": t["role"], "content": t["text"]} for t in turns]
+
+    @staticmethod
+    def _looks_like_followup(utterance: str) -> bool:
+        low = " ".join((utterance or "").lower().split())
+        if not low:
+            return False
+        padded = f" {low} "
+        if any(low.startswith(prefix) for prefix in FOLLOWUP_PREFIXES):
+            return True
+        return any(marker in padded for marker in FOLLOWUP_MARKERS)
+
     async def _answer(self, text: str, turn: int):
         """Answer a turn, running tools if the question wants them.
 
@@ -858,10 +924,13 @@ class Bridge:
             if looks_imperative(text):
                 tools.append(DO_TOOL)
         context = time.strftime("%A %d %B %Y, %I:%M %p")
-        messages = [
-            {"role": "system", "content": self.args.system_prompt},
-            {"role": "user", "content": f"{text}\n\n[current local time: {context}]"},
-        ]
+        history = self.history_for(self.args.device_name, text)
+        if history:
+            log(f"[turn {turn}] carrying {len(history)} earlier turn(s) into the prompt")
+        messages = [{"role": "system", "content": self.args.system_prompt}]
+        messages.extend(history)
+        messages.append(
+            {"role": "user", "content": f"{text}\n\n[current local time: {context}]"})
         reply = None
         for step in range(3):
             reply = await lane.chat(messages, tools=tools or None)
@@ -1085,6 +1154,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-ha", dest="ha", action="store_false")
     p.add_argument("--ha-url", default="http://192.168.1.20:8123")
     p.add_argument("--ha-token", default="~/.config/voice-bridge/ha-token")
+
+    p.add_argument("--memory", choices=("off", "auto", "always"), default="auto",
+                   help="carry recent turns: only for follow-ups (auto), always, or never")
+    p.add_argument("--memory-turns", type=int, default=3, help="exchanges to keep")
+    p.add_argument("--memory-ttl-s", type=float, default=300.0)
 
     p.add_argument("--silence-ms", type=int, default=1200,
                    help="quiet time that closes the utterance; too short cuts a "

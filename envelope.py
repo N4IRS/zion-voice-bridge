@@ -81,7 +81,16 @@ def _parse_stamp(text: str) -> datetime.datetime | None:
 
 def make_handoff(question: str, *, device: str = "satellite", from_agent: str = "bridge",
                  to: str = "muse", bus_id: int | None = None, ttl_s: int = 900,
-                 max_words: int = 30, hint: str = "") -> dict:
+                 max_words: int = 30, hint: str = "", conversation: str = "",
+                 context: list[dict] | None = None) -> dict:
+    """Build a hand-off.
+
+    `context` is the recent exchange as the asker saw it — each entry
+    {"role": "user"|"assistant", "text": ...}, oldest first, already trimmed by the
+    caller. It exists so a responder never has to remember state between calls: the
+    envelope is self-contained, and a responder may still cache deeper state of its
+    own as an optimisation.
+    """
     return {
         "v": VERSION,
         "type": HANDOFF,
@@ -92,8 +101,10 @@ def make_handoff(question: str, *, device: str = "satellite", from_agent: str = 
         "to": to,
         "device": {"name": device, "kind": "echo-dot"},
         "reply_to": {"agent": from_agent, "bus_id": bus_id},
+        "conversation": conversation or "",
         "request": {"question": question.strip(), "voice": True,
-                    "max_words": int(max_words), "hint": hint},
+                    "max_words": int(max_words), "hint": hint,
+                    "context": [c for c in (context or [])][-6:]},
     }
 
 
@@ -219,6 +230,11 @@ def _selftest() -> int:
 
     hand = make_handoff("What time is sunset?", device="Satellite-1", bus_id=1535)
     check("handoff validates", validate(hand) == [], str(validate(hand)))
+    with_ctx = make_handoff("and the other one?", device="Satellite-1", conversation="c1",
+                            context=[{"role": "user", "text": "what time is sunset?"},
+                                     {"role": "assistant", "text": "4:40 PM."}])
+    check("context is carried", len(with_ctx["request"]["context"]) == 2)
+    check("context validates", validate(with_ctx) == [])
     check("handoff round-trips through JSON", parse(json.dumps(hand)) == hand)
     check("handoff is not expired", not is_expired(hand))
     check("plain text is not an envelope", parse("Tomorrow looks fine.") is None)

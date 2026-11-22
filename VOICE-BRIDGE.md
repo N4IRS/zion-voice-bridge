@@ -950,6 +950,41 @@ a pile of per-question special cases.
 
 ---
 
+## 8.7 Conversation memory — the bridge owns it
+
+Every turn was stateless: Ollama keeps nothing, and the bus has no session concept,
+so *"and the other one?"* had no referent. The bridge now keeps the last few
+exchanges **per device** and hands them out in both directions.
+
+**Why the bridge owns it, rather than the answering agent:**
+
+1. The local lane needs it regardless — a store here is not optional work for the
+   hand-off case, it is the same store.
+2. A **self-contained envelope needs no server-side session.** Store-and-forward has
+   no sessions, a responder restarts and redeploys, and this project already spent an
+   evening on what "no consumer" looks like. A responder that must remember is a
+   responder that can be wrong after a restart.
+3. The device's owner should own its conversation. A responder may cache deeper
+   state keyed by conversation id as an *optimisation*; correctness never depends
+   on it.
+
+**How it behaves:** history is kept for `--memory-ttl-s` (300 s) and at most
+`--memory-turns` exchanges (3). It is injected into the prompt only when the
+utterance needs a referent — `--memory auto` matches referential words ("it", "that",
+"them", "the other", "again") and follow-up openers ("and", "what about"), not mere
+brevity: an earlier version treated any short question as a follow-up and put history
+in front of "what is a balun?" for nothing. `--memory always` / `off` override it.
+
+Measured: a follow-up costs ~1.5 s more than a self-contained question (prompt grows
+from 133 to 165 tokens for one exchange), and it resolves — asked *"which needs more
+room, a 40 m dipole or a 20 m?"* then *"and the other one?"*, the answer was about
+the 20 m one.
+
+**In the envelope:** the hand-off carries `conversation` (the controller's own id for
+this exchange) and `request.context` — up to three exchanges, each trimmed to 400
+characters. Announced answers are written back into the history too, so a follow-up
+after *"Muse says: ..."* still has a referent.
+
 ## 9. Observability and failure behaviour
 
 **Bridge log, per turn** (`bridge.log`): wake conversation id, speech start/end
