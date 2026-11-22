@@ -66,7 +66,10 @@ MIC_WIDTH = 2
 # "4 to 1 impedance step up". small.en was no better and three times slower.
 ASR_PROMPT = (
     "Questions about amateur radio antennas and RF: SWR, impedance, folded dipole, "
-    "balun, duplexer, resonance, reflected power, dBm, MHz, coax, feedline, VFO."
+    "balun, duplexer, resonance, reflected power, dBm, MHz, coax, feedline, VFO. "
+    # the assistant and the cloud agent are named in nearly every hand-off, and
+    # "Muse" was decoded as "news" on a live turn
+    "Names: Zion, Muse, Clippy, Satellite."
 )
 
 # Wording matters more than model size here. Measured on this bench with the

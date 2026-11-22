@@ -195,10 +195,14 @@ av              19.0.2    (only used by faster-whisper's file decoding, which we
 | `probe.py` | frozen minimal transport test used to prove the seam (no AI) |
 | `voices/en_US-lessac-medium.onnx(.json)` | Piper voice |
 | `lanes.py` | lane abstraction: `HttpLane` (sync) and `BusLane` (async), the `sync_capable` flag, and `--selftest` |
+| `envelope.py` | the message contract (v1): request/answer, TTL, correlation, typed errors, `schema_summary()` |
+| `verify_test.py` | numeric-verification policy as a 10-case decision table |
+| `memory_test.py` | conversation memory: both turn shapes, the cap, `memory=off` |
 | `tools_test.py` | tool-calling reliability check (15 trials, 3 tools, 1 negative control) |
 | `captures/turnNNN.wav` | per-turn mic audio, 16 kHz mono |
 | `captures/media/` | reply WAVs served to the controller |
-| `bridge.log` | per-turn log: VAD, STT text, LLM tokens/throughput, TTS duration |
+| `deploy/voice-bridge.service` | systemd **user** unit: unbuffered logs, restart backoff, linger |
+| `bridge.log` | legacy per-turn log; since 2026-11-21 the service logs to journald |
 
 ---
 
@@ -384,6 +388,13 @@ Beam size 1, `language="en"`, VAD filter on. 0.6–0.9 s for a 2.5–3.4 s utter
 0.62 s for a 20 s capture. `small.en` is available and slower; `base.en` has been
 correct on every clean utterance so far, and its errors have been *reference*
 errors ("your muse" for "you're Muse"), not comprehension failures.
+
+**Proper nouns are the fragile part.** The vocabulary prompt fixed *"impedance"*, and
+the same mechanism was needed for names: on a live turn **"Muse" was decoded as
+"news"**, so the hand-off asked her about a news icon. `Muse`, `Zion`, `Clippy` and
+`Satellite` now sit in `ASR_PROMPT` beside the RF terms — the assistant's own name (and
+its counterpart's) appear in nearly every hand-off, which makes them the highest-value
+words in the vocabulary.
 
 ### 7.3 Language model — Ollama, `qwen2.5:3b`
 
@@ -1075,6 +1086,14 @@ Two traps found while building it, both already known in other forms:
 Spelled-out numbers count: the original failure — *"eight percent… half a dB"* — has
 no digits in it at all.
 
+**A hand-off can pre-empt verification, and that is fine.** Asked live *"what ERP do I
+get from 100 watts into an antenna with 6 dB of gain?"*, the 3B did not attempt the
+arithmetic at all — it called `handoff`, Muse answered *"six dB is about four times the
+power, so 100 watts gives you roughly 400 watts ERP"* (35 s, spoken as an
+announcement), and the verifier never ran. A model that knows it cannot compute is a
+better outcome than one that tries and needs checking; the two mechanisms do not need
+to be ordered, because either path ends with a checked answer.
+
 **What it does not fix — measured 2026-11-21.** Six questions through the live path:
 
 | question | local (Zion) | verified (cloud) | truth |
@@ -1255,6 +1274,7 @@ Each of these cost a cycle, and each looks like something else.
 | An answered hand-off is never spoken | inbox parse (`{"messages": []}` fell through `or data`), 30 s await on 35 s audio, retries stacking ducking | fixed in three places; see the limits table above (§8.3) |
 | Replies arrive but nothing is announced | the responder did not echo `correlation_id`/`in_reply_to`, so no id matched | match on subject + time as a fallback; ask responders to echo ids (§8.3) |
 | A remark switches a device on | a statement was executed as a command | gate writes on imperative phrasing (`looks_imperative`, §8.5) |
+| The hand-off asked the wrong question: "ask **news** what its icon is" | whisper decoded the agent's name as a common word | put proper nouns in the ASR prompt (`ASR_PROMPT`), same fix as "in petals" → "impedance" (§7.2) |
 | First follow-up that also needed a hand-off failed with `KeyError('text')` | chat history is `{"role","content"}`, the envelope wants `{"role","text"}` — two shapes, one confusion | `_handoff_context()` maps between them; `memory_test.py` asserts both shapes (memory_test.py was written after the bug, not before) |
 | Every envelope answer is dropped as "past its TTL" | `is_expired()` was applied to the *answer*, which carries no `ttl_s` and so fails safe as expired | age the pending entry against the request's TTL instead (§8.3.1) |
 | New instance dies with `OSError: [Errno 98] Address already in use` | the old bridge still holds media port 8700 — and a `kill $(ps ... awk ...)` can match *its own shell's command line* (which contains `bridge.py`) and kill the shell instead of the bridge | kill by explicit PID; verify with `ss -ltnp \| grep 8700` before restarting |
