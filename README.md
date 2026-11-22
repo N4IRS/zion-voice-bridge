@@ -40,7 +40,8 @@ hand-off takes 30–60 s and is spoken **later, out of band**, with no wake word
 | `bridge.py` | the service: seat claim, VAD, turns, tools, hand-off, announcements |
 | `lanes.py` | answer lanes — `HttpLane` (sync) and `BusLane` (async), with the `sync_capable` flag |
 | `envelope.py` | the message contract (v1) for hand-offs and answers: TTL, correlation, typed errors |
-| `clock.py` | the host clock as a tool: spoken time/date, no model guesswork |
+| `calc.py` | deterministic answers for SWR, FSPL, ERP and dipole lengths |
+| `clock.py` | the host clock: spoken time/date, no model guesswork |
 | `ma.py` | Music Assistant, direct over its WS API: play/transport/volume, spoken target resolution |
 | `ha.py` | Home Assistant as a *tool*: fuzzy lookup, safe writes, imperative gate |
 | `probe.py` | frozen minimal transport probe (no AI) used to prove the seam |
@@ -48,6 +49,8 @@ hand-off takes 30–60 s and is spoken **later, out of band**, with no wake word
 | `verify_test.py` | numeric-verification policy as a decision table (when *not* to check) |
 | `escalation_test.py` | routing policy: data→Muse vs reasoning→cloud, and hedge kinds |
 | `stream_test.py` | streaming TTS: sentence 1 returned early, and cancellation on barge-in |
+| `loop_test.py` | CPU work must not block the event loop (whisper/piper run in a thread) |
+| `fastpath_test.py` | which questions are answered in code, and which must reach the model |
 | `memory_test.py` | conversation memory: both turn shapes, the cap, `memory=off` |
 | `deploy/voice-bridge.service` | systemd user unit (unbuffered logs, restart backoff) |
 | `VOICE-BRIDGE.md` | the full design and build record, with measurements and traps |

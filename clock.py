@@ -76,6 +76,8 @@ def spoken_time(now: datetime.datetime) -> str:
         clock = f"quarter past {_words(spoken_hour)}"
     elif minute == 45:
         clock = f"quarter to {_words(spoken_hour % 12 + 1)}"
+    elif minute < 10:
+        clock = f"{_words(spoken_hour)} oh {_words(minute)}"   # 07:01 is "seven oh one"
     else:
         clock = f"{_words(spoken_hour)} {_words(minute)}"
     return f"It's {clock} {part}."
@@ -142,7 +144,7 @@ def _selftest() -> int:
 
     at = datetime.datetime(2026, 11, 21, 18, 54)
     check("evening time", spoken_time(at), "It's six fifty-four in the evening.")
-    check("midnight", spoken_time(at.replace(hour=0, minute=5)), "It's twelve five at night.")
+    check("midnight", spoken_time(at.replace(hour=0, minute=5)), "It's twelve oh five at night.")
     check("noon", spoken_time(at.replace(hour=12, minute=0)), "It's twelve o'clock in the afternoon.")
     check("half past", spoken_time(at.replace(hour=9, minute=30)), "It's half past nine in the morning.")
     check("quarter to", spoken_time(at.replace(hour=10, minute=45)), "It's quarter to eleven in the morning.")

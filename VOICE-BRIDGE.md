@@ -1183,7 +1183,17 @@ Hedge routing follows the same split: *"I need Muse"* is a data deferral and goe
 her; *"I don't have real-time information"* is a knowledge gap and goes to the cloud
 lane first.
 
-### 8.8 The clock is a host tool, not model knowledge
+### 8.8 The clock as a host tool (retired for questions — see §8.13)
+
+> **Retired 2026-11-22.** The `host_clock` tool did what it set out to do — the model
+> asked the host instead of guessing — but it cost 5.4–6.4 s across two inference
+> passes, and it produced two failure modes: the model writing tool syntax as prose,
+> and looping on the clock instead of doing date arithmetic. Clock and date questions
+> are now answered from code before any model is invoked (§8.13). The tool and its
+> tests remain in the tree behind `--clock-tool`, off by default, because the reasoning
+> below about *why the model should not guess* still holds.
+
+
 
 Design decision (owner): the model should **ask the host** for the time rather than be
 handed it or bypassed. So `host_clock(kind)` is offered whenever the turn is temporal,
@@ -1409,6 +1419,41 @@ auditable after the fact.
 The `verified (agreed)` / `verified (corrected)` label compares **numbers, not
 wording**, so a rephrase is not recorded as a correction.
 
+### 8.13 Deterministic fast paths — code answers what code owns
+
+Two classes of question have authoritative answers that are **not language tasks**,
+and both were measurably worse for being routed through a model:
+
+| class | before | after |
+|---|---|---|
+| clock / date | 5.4–6.4 s, two passes; produced tool-syntax prose ("handoff needs data") and a five-call loop | **0.000 s**, from the OS |
+| workshop formulas | wrong 5 times in 6; cloud verification only reached 5/6 | **0.000 s**, computed |
+
+`calc.py` covers the formulas this bench actually gets asked, each with a known-value
+test so "correct" is defined before anything moves:
+
+| formula | example | answer |
+|---|---|---|
+| SWR → reflected % + mismatch loss | 3:1 | 25%, 1.25 dB |
+| free-space path loss | 440 MHz / 10 km | 105.32 dB |
+| ERP / EIRP from power and gain | 100 W into 6 dBd | 398.11 W ERP |
+| dipole element length | 14.2 MHz half-wave | 32.96 ft (16.48 ft quarter-wave) |
+| days until a date or holiday | Christmas | 33 days |
+
+**The dipole row is the whole argument.** The same question through the local model
+gave 38.5 ft, and through the 70B cloud model 16.48 ft — a quarter wave, confidently.
+Computed here it is 32.96 ft. Arithmetic is not a language task, and this is where that
+stops being a slogan.
+
+**Patterns are written to miss rather than misfire.** Anything not matched falls
+through to the model, so a miss costs a slow answer while a misfire would cost a wrong
+one. `fastpath_test.py` pins both directions — 8 clock phrasings that must be answered
+in code, 5 formulas, and 6 questions that must reach the model (including *"how many
+days of leave do I have"*, which is not a date delta).
+
+**Flags:** `--fastpath {on,off}` (default on) and `--clock-tool` (default off). Both
+paths log `answered from the fast path (...)`, so a turn's route is always visible.
+
 ## 9. Observability and failure behaviour
 
 **Bridge log, per turn** (`journalctl --user -u voice-bridge`): wake conversation id, speech start/end
@@ -1590,6 +1635,7 @@ Each of these cost a cycle, and each looks like something else.
 | Replies arrive but nothing is announced | the responder did not echo `correlation_id`/`in_reply_to`, so no id matched | match on subject + time as a fallback; ask responders to echo ids (§8.3) |
 | A remark switches a device on | a statement was executed as a command | gate writes on imperative phrasing (`looks_imperative`, §8.5) |
 | The hand-off asked the wrong question: "ask **news** what its icon is" | whisper decoded the agent's name as a common word | put proper nouns in the ASR prompt (`ASR_PROMPT`), same fix as "in petals" → "impedance" (§7.2) |
+| The Dot answered in 5-6 s with a number the model guessed | a fact the OS or arithmetic already knows was routed through two model passes | clock and the workshop formulas are answered in code, 0.000 s (§8.13) |
 | The Dot said "handoff needs data" | the model wrote tool-call syntax as text, and the phrasing "day of the week" matched no date pattern so no tool was offered | pattern extended; tool syntax in an answer is detected and never spoken (§8.8) |
 | First follow-up that also needed a hand-off failed with `KeyError('text')` | chat history is `{"role","content"}`, the envelope wants `{"role","text"}` — two shapes, one confusion | `_handoff_context()` maps between them; `memory_test.py` asserts both shapes (memory_test.py was written after the bug, not before) |
 | Every envelope answer is dropped as "past its TTL" | `is_expired()` was applied to the *answer*, which carries no `ttl_s` and so fails safe as expired | age the pending entry against the request's TTL instead (§8.3.1) |
@@ -1618,10 +1664,11 @@ What genuinely remains:
 - **The device's data plane is fragile under long announcements.** One 40 s clip
   (3.7 MB) made the Dot stop reporting `playback_stats`, then drop its plane with
   `keepalive ping timeout`. Trimming to ~30 words hides it; the cause is unproven.
-- **Verification cannot fix a wrong cloud answer.** Four of six numeric questions were
-  corrected; the dipole-length one got *worse* (cloud computed a quarter wave), and a
-  date-difference answer came back 33 days instead of 34. Escalation improves the
-  odds, it does not guarantee truth.
+- **Verification cannot fix a wrong cloud answer** — though it matters less now.
+  Of six numeric questions, four were corrected, one was a no-op, and the dipole-length
+  one got *worse* (the cloud computed a quarter wave). Those five formula classes are
+  now computed in code (§8.13), so verification only runs on arithmetic outside them.
+  Anything not covered by `calc.py` still has the 5-in-6 reliability of a model check.
 - **The clock is now two model steps** (5.4 s for the time, 6.4 s for the date) —
   slower than answering from the OS, by design: the model owns the decision.
 - **`envelope.py` has no v2 path.** Additive fields are proven safe and discoverable

@@ -51,6 +51,7 @@ import numpy as np
 from aioesphomeapi import APIClient
 from aioesphomeapi import VoiceAssistantEventType as ET
 
+import calc
 import clock
 import envelope as env_schema
 from ha import (DO_TOOL, HA_TOOLS, LOOKUP_TOOL, HaError, HomeAssistant,
@@ -436,6 +437,7 @@ class Brain:
         self.whisper = None
         self.piper = None
         self.piper_rate = 22050
+        self._tts_lock = threading.Lock()      # PiperVoice is not documented thread-safe
         self.lanes = self._build_lanes()
         self.local = self.lanes["local"]
 
@@ -539,7 +541,8 @@ class Brain:
     def speak(self, text: str, path: str) -> tuple[float, float]:
         """Write a WAV; returns (seconds of audio, synthesis seconds)."""
         t = time.monotonic()
-        chunks = list(self.piper.synthesize(text))
+        with self._tts_lock:
+            chunks = list(self.piper.synthesize(text))
         audio = np.concatenate([c.audio_float_array for c in chunks]) if chunks else np.zeros(0, np.float32)
         write_wav(path, audio, self.piper_rate)
         return len(audio) / self.piper_rate, time.monotonic() - t
@@ -652,7 +655,7 @@ class Bridge:
 
             # 1. speech to text
             if self.brain.whisper:
-                text, stt_s = self.brain.transcribe(pcm)
+                text, stt_s = await asyncio.to_thread(self.brain.transcribe, pcm)
                 log(f"[turn {turn}] STT {stt_s * 1000:.0f} ms: {text!r}")
             else:
                 text, stt_s = "(no stt)", 0.0
@@ -703,7 +706,7 @@ class Bridge:
             name = f"reply-{turn:03d}-{uuid.uuid4().hex[:6]}.wav"
             path = os.path.join(self.media_dir, name)
             if self.brain.piper:
-                audio_s, tts_s = self.brain.speak(reply, path)
+                audio_s, tts_s = await asyncio.to_thread(self.brain.speak, reply, path)
                 self.audio_s = audio_s
                 log(f"[turn {turn}] TTS {tts_s * 1000:.0f} ms for {audio_s:.2f} s of speech")
             else:
@@ -711,7 +714,7 @@ class Bridge:
                 log(f"[turn {turn}] TTS: chime (no --tts)")
             if self.args.attribution == "always" and not handoff_note:
                 reply = f"{self.brain.lanes.answer_lane(self.args.answer_lane).spoken_name} says: {reply}"
-                self.brain.speak(reply, path)
+                await asyncio.to_thread(self.brain.speak, reply, path)
             url = f"http://{self.args.media_host}:{self.args.media_port}/{name}"
             self.send_event(ET.VOICE_ASSISTANT_TTS_START)
             self.send_event(ET.VOICE_ASSISTANT_TTS_END, {"url": url})
@@ -921,7 +924,7 @@ class Bridge:
         path = os.path.join(self.media_dir, name)
         audio_s = 0.0
         if self.brain.piper:
-            audio_s, _tts_s = self.brain.speak(text, path)
+            audio_s, _tts_s = await asyncio.to_thread(self.brain.speak, text, path)
         else:
             write_tone(path)
         url = f"http://{self.args.media_host}:{self.args.media_port}/{name}"
@@ -1257,7 +1260,23 @@ class Bridge:
 
         Returns (spoken_text, handoff_args_or_None, note). Tool calls are executed
         here, in the bridge, so the model never touches Home Assistant directly.
+
+        The clock and the workshop's formulas are answered from code before any
+        model is invoked: both are authoritative facts, not language tasks, and the
+        model was measured wrong on the arithmetic 5 times in 6.
         """
+        if self.args.fastpath:
+            for label, handler in self.FAST_PATHS:
+                try:
+                    spoken = handler(text)
+                except Exception as exc:  # noqa: BLE001 - a parser must not break a turn
+                    log(f"[turn {turn}] fast path {label} failed: {exc!r}")
+                    spoken = None
+                if spoken:
+                    log(f"[turn {turn}] answered from the fast path ({label}), no model "
+                        f"call: {spoken[:60]!r}")
+                    return spoken, None, f"fastpath ({label})"
+
         if not self.args.llm:
             return text, None, "loopback"
 
@@ -1274,8 +1293,8 @@ class Bridge:
                 tools.append(DO_TOOL)
         if self.ma is not None and wants_music_tools(text):
             tools.extend(self.ma.tools())
-        if clock.answer(text) or clock.wants_time_context(text):
-            tools.extend(CLOCK_TOOL)
+        if self.args.clock_tool and (clock.answer(text) or clock.wants_time_context(text)):
+            tools.extend(CLOCK_TOOL)   # retired: the fast path answers these in µs
         # No clock injection. It cost ~14 tokens on every turn and made the model
         # append "the current time is..." to unrelated answers (observed three times).
         # The date now arrives only if the model asks for it via host_clock.
@@ -1453,6 +1472,9 @@ class Bridge:
         except (MaError, ValueError) as exc:
             log(f"[turn {turn}] music tool {name} refused: {exc}")
             return {"ok": False, "error": str(exc)}
+
+    #: answered from code, never predicted.
+    FAST_PATHS = (("calc", calc.answer), ("clock", clock.answer))
 
     async def _answer_streaming(self, messages: list[dict], turn: int, question: str):
         """Hand back sentence 1 as soon as it exists; announce the rest as they arrive.
@@ -1757,6 +1779,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--music-target", default="Satellite-1",
                    help="default speaker when the request does not name one")
 
+    p.add_argument("--fastpath", choices=("on", "off"), default="on",
+                   help="answer clock/date and the workshop's formulas in code, not the model")
+    p.add_argument("--clock-tool", dest="clock_tool", action="store_true", default=False,
+                   help="offer host_clock() to the model (retired: the fast path is faster)")
     p.add_argument("--stream-tts", dest="stream_tts", action="store_true", default=True,
                    help="speak the first sentence while the rest is still generating")
     p.add_argument("--no-stream-tts", dest="stream_tts", action="store_false")

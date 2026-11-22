@@ -39,6 +39,7 @@ def fake_bridge(announced, announce_delay=0.05):
         system_prompt=SYSTEM_PROMPT, attribution="off",
         device_name="Satellite-1", memory="off", memory_turns=3, memory_ttl_s=300.0,
         stream_tts=True, handoff="off", verify="off", verify_max_tokens=400,
+        fastpath="off", clock_tool=False,
         max_tokens=100, media_port=8701, media_host="127.0.0.1", announce_timeout=30,
         cloud_name="Muse", local_name="Zion", muse=False, ha=False, music=False,
         silence_ms=1200, min_speech_ms=160, initial_prompt="", whisper_model="base.en",
