@@ -1075,6 +1075,27 @@ Two traps found while building it, both already known in other forms:
 Spelled-out numbers count: the original failure — *"eight percent… half a dB"* — has
 no digits in it at all.
 
+**What it does not fix — measured 2026-11-21.** Six questions through the live path:
+
+| question | local (Zion) | verified (cloud) | truth |
+|---|---|---|---|
+| ERP for 100 W into 6 dBd | 70.7 W ❌ | **400 W** ✅ | 398 W |
+| 100 W through 1.5 dB of line | 87.5 W ❌ | **70.8 W** ✅ | 70.8 W |
+| SWR 3:1 reflected / loss | 25%, "9 dB" ❌ | **1.25 dB** ✅ | 25%, 1.25 dB |
+| FSPL at 440 MHz / 10 km | 135.8 dB ❌ | **105.3 dB** ✅ | 105.3 dB |
+| double the distance | 6 dB ✅ | 6 dB ✅ | 6.02 dB |
+| half-wave dipole for 14.2 MHz | 38.5 ft ❌ | **16.48 ft** ❌ | 33 ft |
+
+Four corrected, one a no-op, **and one where the cloud was also wrong** — it computed a
+quarter wave (234/14.2 = 16.5 ft) instead of a half wave. So verification reduces
+numeric error; it does not eliminate it, and it can replace one wrong number with
+another. What it does guarantee is that the answer came from a model with room to show
+its working, and every correction is logged with both answers so a wrong result is
+auditable after the fact.
+
+The `verified (agreed)` / `verified (corrected)` label compares **numbers, not
+wording**, so a rephrase is not recorded as a correction.
+
 ## 9. Observability and failure behaviour
 
 **Bridge log, per turn** (`bridge.log`): wake conversation id, speech start/end

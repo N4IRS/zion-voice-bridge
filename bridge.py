@@ -313,6 +313,11 @@ VERIFY_SYSTEM = (
     "ANSWER: <one short spoken sentence containing every number asked for>"
 )
 
+def _numbers(text: str) -> set[str]:
+    """Numeric tokens, normalised enough to compare two answers' claims."""
+    return {m.group(0).rstrip(".") for m in re.finditer(r"\d+(?:\.\d+)?", text or "")}
+
+
 #: questions whose numbers come from the injected clock, not from the model
 CLOCK_QUESTION = re.compile(
     r"^(what|which)\s+(time|date|day)\b|what day is it|today'?s date|"
@@ -1092,7 +1097,10 @@ class Bridge:
                     checked = await self._verify(text, final)
                     if checked:
                         verified, stats = checked
-                        if verified.strip() != final.strip():
+                        # compare the NUMBERS, not the wording: "the FSPL increases by
+                        # 6 dB" and "the free space path loss increases by 6 dB" are the
+                        # same answer and were being logged as a correction
+                        if _numbers(verified) != _numbers(final):
                             log(f"[turn {turn}] verify corrected the answer: "
                                 f"{final!r} -> {verified!r} {stats}")
                             note = "verified (corrected)"
