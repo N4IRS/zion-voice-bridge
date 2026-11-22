@@ -193,7 +193,10 @@ av              19.0.2    (only used by faster-whisper's file decoding, which we
 |---|---|
 | `bridge.py` | **the working backend.** Seat claim, VAD, STT, LLM, TTS, media server |
 | `probe.py` | frozen minimal transport test used to prove the seam (no AI) |
-| `voices/en_US-lessac-medium.onnx(.json)` | Piper voice |
+| `clock.py` | the host clock as a tool: spoken time and date, 22 selftest checks |
+| `ma.py` | Music Assistant over its WebSocket API: play/transport/volume, `--selftest` |
+| `escalation_test.py` | routing policy: data→Muse vs reasoning→cloud, and hedge kinds |
+| `voices/en_US-hfc_female-medium.onnx` | deployed Piper voice (lessac and others also present) |
 | `lanes.py` | lane abstraction: `HttpLane` (sync) and `BusLane` (async), the `sync_capable` flag, and `--selftest` |
 | `envelope.py` | the message contract (v1): request/answer, TTL, correlation, typed errors, `schema_summary()` |
 | `verify_test.py` | numeric-verification policy as a 10-case decision table |
@@ -1498,28 +1501,40 @@ Each of these cost a cycle, and each looks like something else.
 
 ## 13. Known limits and what is not built
 
-- **No conversation memory.** Ollama keeps none between calls, so every turn is
-  stateless; a follow-up ("and the other one?") has no referent. The controller
-  does support continuations (`conversation_id`, `continue_conversation`), and the
-  bridge currently ignores both.
-- **No handoff trigger yet.** The lanes exist (`lanes.py`, `sync_capable` on each),
-  but nothing decides *when* to leave the local lane: the `handoff(question, why)`
-  tool, the explicit-ask and hedge backstops, the spoken cue and the pending-answer
-  poller described in §8.2–8.3 are designed and unbuilt.
-- **No systemd unit.** The bridge runs detached from a shell; a reboot loses it.
-- **No streaming TTS.** The reply is synthesised whole, then served. The
-  controller *can* play an ongoing fetch incrementally (that is how HA's streaming
-  TTS works: URL in `RUN_START`, `INTENT_PROGRESS{tts_start_streaming:"1"}`), and
-  the device's `streamReply` setting gates it — a natural next latency win.
-- **One Dot.** Satellite-2 is offline, so cross-device arbitration is untested
-  here.
-- **Wake word is `hey_jarvis`.** A custom "Hey Muse" model is trainable with the
-  project's `oww_forge` and installable from the dashboard; cosmetic.
-- **No LED feedback from the bridge.** The controller lights the ring itself; the
-  bridge drives no LED frames.
-- **The device's own outbound traffic was not audited.** Host-side path is proven
-  local; proving the Dot never talks to Amazon would mean inspecting conntrack or
-  the router.
+Built and proven since the earlier draft of this list: conversation memory (§8.8),
+the hand-off trigger and the Muse lane (§8.3), the systemd unit (§10.3), numeric
+verification (§8.9), the clock tool (§8.7.2), Music Assistant (§8.5) and Home
+Assistant tools (§8.6).
+
+What genuinely remains:
+
+- **No streaming TTS.** Every reply is synthesised whole, then served. That is why
+  Kokoro's 2 s of synthesis is a real cost rather than a free upgrade, and why a
+  long answer still has a silent gap before it starts. The controller can play an
+  ongoing fetch incrementally (`RUN_START` URL + `INTENT_PROGRESS{tts_start_streaming}`,
+  gated by the device's `streamReply`), so the machinery exists on its side.
+- **One Dot.** Satellite-2 has been offline since 2026-11-06, so "loudest wins"
+  arbitration and the two-device split have never been exercised.
+- **The device's data plane is fragile under long announcements.** One 40 s clip
+  (3.7 MB) made the Dot stop reporting `playback_stats`, then drop its plane with
+  `keepalive ping timeout`. Trimming to ~30 words hides it; the cause is unproven.
+- **Verification cannot fix a wrong cloud answer.** Four of six numeric questions were
+  corrected; the dipole-length one got *worse* (cloud computed a quarter wave), and a
+  date-difference answer came back 33 days instead of 34. Escalation improves the
+  odds, it does not guarantee truth.
+- **The clock is now two model steps** (5.4 s for the time, 6.4 s for the date) —
+  slower than answering from the OS, by design: the model owns the decision.
+- **`envelope.py` has no v2 path.** Additive fields are proven safe and discoverable
+  (§8.3.1); nothing defines what a responder does with a breaking change.
+- **Muse's lane depends on her side polling.** The bridge queues, persists and
+  announces; if her hook is down, nothing is delivered and the turn ends with an ack.
+- **Wake word is `hey_jarvis`** while the assistant is Zion and the agent is Muse. A
+  "Hey Muse" model is trainable with `oww_forge`; cosmetic but increasingly odd.
+- **Transcripts live in journald and in Muse's bus history.** No retention policy is
+  defined beyond "admin-only".
+- **The device's own outbound traffic was not audited.** The host-side path is proven
+  local; proving the Dot never talks to Amazon would mean inspecting conntrack or the
+  router.
 
 ---
 
