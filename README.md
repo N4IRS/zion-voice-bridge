@@ -40,6 +40,7 @@ hand-off takes 30–60 s and is spoken **later, out of band**, with no wake word
 | `bridge.py` | the service: seat claim, VAD, turns, tools, hand-off, announcements |
 | `lanes.py` | answer lanes — `HttpLane` (sync) and `BusLane` (async), with the `sync_capable` flag |
 | `envelope.py` | the message contract (v1) for hand-offs and answers: TTL, correlation, typed errors |
+| `ma.py` | Music Assistant, direct over its WS API: play/transport/volume, spoken target resolution |
 | `ha.py` | Home Assistant as a *tool*: fuzzy lookup, safe writes, imperative gate |
 | `probe.py` | frozen minimal transport probe (no AI) used to prove the seam |
 | `tools_test.py` | tool-calling reliability check (15 trials, 3 tools, 1 negative control) |
@@ -56,6 +57,7 @@ Each module self-tests without hardware or network where it can:
 .venv/bin/python memory_test.py     # 9 checks: history shape and limits
 .venv/bin/python lanes.py --selftest
 HA_URL=http://<ha>:8123 .venv/bin/python ha.py   # needs a live Home Assistant
+MA_URL=ws://<ma>:8095/ws .venv/bin/python ma.py  # needs Music Assistant + token
 ```
 
 ## Requirements
@@ -100,6 +102,7 @@ done
 | `--verify {off,numbers,always}` | cloud-check a local answer that contains numbers (the 3B is confidently wrong on arithmetic) |
 | `--attribution {off,handoff,always}` | say who answered ("Muse says: …") |
 | `--ha` / `--no-ha` | Home Assistant tools on/off |
+| `--music` / `--no-music`, `--ma-url`, `--music-target` | Music Assistant tools (default speaker `Satellite-1`) |
 | `--silence-ms` | quiet time that ends the utterance (600 ms cuts a question at its first pause) |
 
 **Prerequisite:** the EchoMuse controller allows one voice backend per device. Disable

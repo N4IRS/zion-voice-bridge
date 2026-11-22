@@ -951,7 +951,67 @@ per turn:
 To move a device between backends: disable/re-enable its ESPHome entry in HA.
 Whichever backend owns the device also owns its announcements and timers.
 
-### 8.5 Home Assistant as a tool (not as a pipeline)
+### 8.5 Music Assistant as a tool — direct, not through Home Assistant
+
+**Decision (owner, 2026-11-21): talk to Music Assistant directly.** HA is used for
+what only HA can do; MA has its own WebSocket API and going through HA adds a hop and
+an abstraction for no gain.
+
+`ma.py` speaks `ws://<ma>:8095/ws` with a JWT. Every command name below was
+**measured against MA 2.10.12**, not recalled:
+
+| command | args | returns |
+|---|---|---|
+| `auth` | `{"token": …}` | `{authenticated: true}` |
+| `players/all` | — | players, including `volume_level` |
+| `player_queues/all` | — | queues: `state`, `current_item` |
+| `music/search` | `{"search_query", "limit"}` | `{tracks, albums, playlists, radio, …}` |
+| `player_queues/play_media` | `{"queue_id", "media": <item or list>, "option": "replace"}` | — |
+| `player_queues/play_pause` / `pause` / `stop` / `next` / `previous` | `{"queue_id"}` | — |
+| `players/cmd/volume_set` | `{"player_id", "volume_level"}` | — |
+
+**Two shape traps, each costing a round trip:**
+
+1. **`play_media` wants the media *item object*** (as returned by `music/search`), not
+   a `provider://type/id` string — a URI returns *"Value of type NoneType is invalid
+   for media"*. `{"command":"auth","token":…}` likewise returns *"token required in
+   args"*: the envelope matters.
+2. **Playback is addressed by `queue_id`, not `player_id`.** For these players the two
+   ids happen to be identical, which is the kind of coincidence that breaks on the
+   next device.
+
+**A search hit is not a promise.** A library entry from an unavailable provider is
+returned by `music/search` and then refused by `play_media` (*"the requested media item
+could not be found"*), which is how the first live attempt failed after the same query
+had worked a minute earlier. `play()` now walks the candidate chain — track, album,
+playlist, radio — instead of betting on one.
+
+**Targets come from words and are refused when ambiguous:**
+
+| said | resolves to |
+|---|---|
+| *(nothing)* | default `Satellite-1` (`--music-target`) |
+| "on the dot" / "satellite" | `Satellite-1` |
+| "on the esp32" / "a1s" | `ESP32-A1S` |
+| "on the tv" / "roku" | **refused — two TVs; say which** |
+| "on the moon" | refused, with the list of known players |
+
+Verified live: *"play pink floyd"* → playing on `Satellite-1`;
+*"play pink floyd on the esp32"* → playing on `ESP32-A1S`; *"stop the music"* → idle.
+The tools are offered only when the utterance mentions music (`wants_music_tools`), so
+a question about antennas pays nothing for them.
+
+**Token.** A long-lived JWT (1 year) with `role: admin`, stored at
+`~/.config/voice-bridge/ma-token` (mode 600, gitignored). Admin is more than a voice
+bridge needs — MA's UI does not obviously offer less — so treat it as a standing
+privilege and rotate it if the transcript it was pasted into is ever shared.
+
+**The Dot is both the voice satellite and an MA player.** Music on `Satellite-1`
+therefore collides with turn audio; EchoMuse ducks music under a voice turn
+(`duckDb`, device `audio_mix`), which is why defaulting to the Dot is safe — but it is
+the first thing to watch when a turn sounds odd over music.
+
+### 8.6 Home Assistant as a tool (not as a pipeline)
 
 **Decision (owner, 2026-11-21): bypass Hermes for now.** Hermes is the designated
 write-master in the agent-bus design, but it has been offline since 2026-11-13 and
@@ -1010,7 +1070,7 @@ about antennas pays nothing for them.
 answer lane is set to the cloud lane, that data goes with the question. Local lane
 by default keeps it home.
 
-### 8.6 What the cloud lane is *not* for
+### 8.7 What the cloud lane is *not* for
 
 A cloud model has no clock and no weather either, so "what time is it" and
 "what's the weather" are **data** problems, not model problems — the right fix is
@@ -1021,7 +1081,7 @@ a pile of per-question special cases.
 
 ---
 
-## 8.7 Conversation memory — the bridge owns it
+### 8.8 Conversation memory — the bridge owns it
 
 Every turn was stateless: Ollama keeps nothing, and the bus has no session concept,
 so *"and the other one?"* had no referent. The bridge now keeps the last few
@@ -1063,7 +1123,7 @@ less room than the 40-meter one"*, matched on the envelope correlation, and the 
 spoke it. A responder that reads the envelope needs no memory at all; a responder
 that keeps its own is an optimisation, and now demonstrably not a requirement.
 
-## 8.8 Numeric verification — the answer the assistant could get wrong
+### 8.9 Numeric verification — the answer the assistant could get wrong
 
 The local 3B is not usually wrong, but when it is wrong it is **confident**: asked
 what a 3:1 SWR reflects it said *"eight percent reflected, about half a dB loss"*,

@@ -54,6 +54,7 @@ from aioesphomeapi import VoiceAssistantEventType as ET
 import envelope as env_schema
 from ha import (DO_TOOL, HA_TOOLS, LOOKUP_TOOL, HaError, HomeAssistant,
                 looks_imperative, wants_ha_tools)
+from ma import MaError, MusicAssistant, wants_music_tools
 from lanes import BusLane, HttpLane, LaneError, Lanes, NotSyncCapable
 
 LOG = logging.getLogger("bridge")
@@ -483,6 +484,9 @@ class Bridge:
         self.pending_path = os.path.join(args.outdir, "pending-handoffs.json")
         self.ha = (HomeAssistant(url=args.ha_url, token_file=args.ha_token)
                    if args.ha else None)
+        self.ma = (MusicAssistant(url=args.ma_url, token_file=args.ma_token,
+                                  default_target=args.music_target)
+                   if args.music else None)
         self.history: dict[str, list[dict]] = {}
         self.conversation = ""
         self._reset()
@@ -1085,6 +1089,8 @@ class Bridge:
             tools.append(LOOKUP_TOOL)
             if looks_imperative(text):
                 tools.append(DO_TOOL)
+        if self.ma is not None and wants_music_tools(text):
+            tools.extend(self.ma.tools())
         context = time.strftime("%A %d %B %Y, %I:%M %p")
         history = self.history_for(self.args.device_name, text)
         if history:
@@ -1131,11 +1137,37 @@ class Bridge:
                     args = {}
                 if name == "handoff":
                     return "", args or {"question": text}, "handoff requested"
-                result = self._run_ha_tool(turn, name, args)
+                if name.startswith("music_"):
+                    result = await self._run_music_tool(turn, name, args)
+                else:
+                    result = self._run_ha_tool(turn, name, args)
                 messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                  "content": json.dumps(result)[:700]})
         log(f"[turn {turn}] tool loop hit its step limit")
         return (reply.text if reply else ""), None, "tool-limit"
+
+    async def _run_music_tool(self, turn: int, name: str, args: dict) -> dict:
+        if self.ma is None:
+            return {"ok": False, "error": "music is not configured"}
+        try:
+            if name == "music_play":
+                res = await self.ma.play(str(args.get("query", "")),
+                                         args.get("target") or None)
+                log(f"[turn {turn}] music play {res['playing']!r} on {res['target']}")
+            elif name == "music_transport":
+                res = await self.ma.transport(str(args.get("action", "")),
+                                              args.get("target") or None)
+                log(f"[turn {turn}] music {res['action']} on {res['target']}")
+            elif name == "music_volume":
+                res = await self.ma.volume(int(args.get("level", 50)),
+                                           args.get("target") or None)
+                log(f"[turn {turn}] music volume {res['volume']} on {res['target']}")
+            else:
+                return {"ok": False, "error": f"unknown tool {name!r}"}
+            return {"ok": True, **res}
+        except (MaError, ValueError) as exc:
+            log(f"[turn {turn}] music tool {name} refused: {exc}")
+            return {"ok": False, "error": str(exc)}
 
     def _run_ha_tool(self, turn: int, name: str, args: dict) -> dict:
         if self.ha is None:
@@ -1263,6 +1295,9 @@ class Bridge:
                 self.poller.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self.poller
+            if self.ma is not None:
+                with contextlib.suppress(Exception):
+                    await self.ma.aclose()
             with contextlib.suppress(Exception):
                 await self.brain.lanes.aclose()
             with contextlib.suppress(Exception):
@@ -1334,6 +1369,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-ha", dest="ha", action="store_false")
     p.add_argument("--ha-url", default="http://192.168.1.20:8123")
     p.add_argument("--ha-token", default="~/.config/voice-bridge/ha-token")
+    p.add_argument("--music", dest="music", action="store_true", default=True,
+                   help="let the local lane control Music Assistant directly (default on)")
+    p.add_argument("--no-music", dest="music", action="store_false")
+    p.add_argument("--ma-url", default="ws://192.168.1.20:8095/ws")
+    p.add_argument("--ma-token", default="~/.config/voice-bridge/ma-token")
+    p.add_argument("--music-target", default="Satellite-1",
+                   help="default speaker when the request does not name one")
 
     p.add_argument("--verify-max-tokens", type=int, default=400,
                    help="room for the verifier to show its working before the ANSWER line")
