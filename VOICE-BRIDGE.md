@@ -1198,6 +1198,7 @@ There is no clock injection any more; the tool is the only source.
 
 | symptom | cause | fix |
 |---|---|---|
+| asked *"what day of the week is it?"* the Dot said **"handoff needs data"** | the date pattern did not match that phrasing, so no clock tool was offered — and the model wrote tool syntax as **prose** instead of calling anything | the pattern now covers "day of the week" / "which day"; and any reply matching tool syntax (`handoff needs=…`, `host_clock`, `music_*`, `ha_*`) is never spoken — the turn is retried without tools, then apologises |
 | the model answered *"It's twenty-six hundred twenty-one year November twenty-first, two-hundred-twenty…"* | the tool result carried `{spoken, digits, iso}` and the model regurgitated all three | return **one** field; the verifier gets the digits bridge-side, not in the prompt |
 | *"how many days until Christmas"* looped: three steps, five clock calls, 20 s, no answer | the 3B would rather re-ask for the date than do date arithmetic | a repeated tool call now **escalates to the reasoning lane** on the first repeat (34 days, and the cloud is given the host date because it cannot call tools) |
 
@@ -1541,6 +1542,7 @@ Each of these cost a cycle, and each looks like something else.
 | Replies arrive but nothing is announced | the responder did not echo `correlation_id`/`in_reply_to`, so no id matched | match on subject + time as a fallback; ask responders to echo ids (§8.3) |
 | A remark switches a device on | a statement was executed as a command | gate writes on imperative phrasing (`looks_imperative`, §8.5) |
 | The hand-off asked the wrong question: "ask **news** what its icon is" | whisper decoded the agent's name as a common word | put proper nouns in the ASR prompt (`ASR_PROMPT`), same fix as "in petals" → "impedance" (§7.2) |
+| The Dot said "handoff needs data" | the model wrote tool-call syntax as text, and the phrasing "day of the week" matched no date pattern so no tool was offered | pattern extended; tool syntax in an answer is detected and never spoken (§8.7.2) |
 | First follow-up that also needed a hand-off failed with `KeyError('text')` | chat history is `{"role","content"}`, the envelope wants `{"role","text"}` — two shapes, one confusion | `_handoff_context()` maps between them; `memory_test.py` asserts both shapes (memory_test.py was written after the bug, not before) |
 | Every envelope answer is dropped as "past its TTL" | `is_expired()` was applied to the *answer*, which carries no `ttl_s` and so fails safe as expired | age the pending entry against the request's TTL instead (§8.3.1) |
 | New instance dies with `OSError: [Errno 98] Address already in use` | the old bridge still holds media port 8700 — and a `kill $(ps ... awk ...)` can match *its own shell's command line* (which contains `bridge.py`) and kill the shell instead of the bridge | kill by explicit PID; verify with `ss -ltnp \| grep 8700` before restarting |

@@ -379,6 +379,14 @@ def _covered_by(answer: str, tool_numbers: set[str]) -> bool:
     return True
 
 
+#: A model that writes tool syntax as prose instead of calling the tool. Measured:
+#: "What day of the week is it?" produced the literal text "handoff needs='data'",
+#: which was then spoken to the user.
+TOOL_SYNTAX = re.compile(
+    r"^\s*(?:handoff|host_clock|music_play|music_transport|music_volume|"
+    r"ha_lookup|ha_do)\b|needs\s*=\s*['\"]|\bneeds\s*=\s*(?:data|reasoning)\b",
+    re.IGNORECASE)
+
 #: sentence boundary for streaming TTS: terminal punctuation followed by space or end
 SENTENCE_END = re.compile(r"[.!?](?:\s|$)")
 
@@ -1308,6 +1316,16 @@ class Bridge:
                 f"text={reply.text[:60]!r}")
             if not reply.tool_calls:
                 final = reply.text
+                if TOOL_SYNTAX.search(final or ""):
+                    log(f"[turn {turn}] model wrote tool syntax as text "
+                        f"({final[:50]!r}); retrying without tools")
+                    try:
+                        plain = await lane.chat(messages, tools=None)
+                        final = plain.text
+                    except LaneError as exc:
+                        log(f"[turn {turn}] retry failed: {exc}")
+                        return ("Sorry, I got confused by that one.",
+                                None, "tool-syntax")
                 used_tools = step > 0
                 note = ""
                 if self._should_verify(text, final, used_tools, tool_numbers):

@@ -90,9 +90,13 @@ def spoken_date(now: datetime.datetime) -> str:
 #: prefixes of longer questions ("what time does the shop close" is NOT ours).
 TIME_Q = re.compile(r"^\s*(what(?:'s| is)?(?: the)? time(?: is it)?|"
                     r"what time is it|got the time|time is it)\??\s*$", re.IGNORECASE)
-DATE_Q = re.compile(r"^\s*(what(?:'s| is)?(?: the)? date(?: today)?|"
-                    r"what day is (?:it|today)|what is today(?:'s date)?|"
-                    r"what'?s today(?:'s date)?)\??\s*$", re.IGNORECASE)
+DATE_Q = re.compile(
+    r"^\s*(?:"
+    r"what(?:'s| is)?(?: the)? date(?: today)?|"
+    r"(?:what|which) day(?: of the week)? is (?:it|today)|"
+    r"(?:what|which) day(?: of the week)?(?: is it)? today|"
+    r"what is today(?:'s date)?|what'?s today(?:'s date)?"
+    r")\??\s*$", re.IGNORECASE)
 BOTH_Q = re.compile(r"^\s*(?:(?:what(?:'s| is)?(?: the)? )?"
                     r"(?:time and date|date and time))\??\s*$", re.IGNORECASE)
 
@@ -101,7 +105,7 @@ BOTH_Q = re.compile(r"^\s*(?:(?:what(?:'s| is)?(?: the)? )?"
 TIME_CONTEXT = re.compile(
     r"\b(today|tonight|tomorrow|yesterday|this (?:morning|afternoon|evening|week|month)|"
     r"next (?:week|month)|days? (?:until|till|to)|how long until|sunset|sunrise|"
-    r"current (?:time|date)|right now|so far)\b", re.IGNORECASE)
+    r"current (?:time|date)|right now|so far|day of the week|what day)\b", re.IGNORECASE)
 
 
 def answer(question: str, now: datetime.datetime | None = None) -> str | None:
@@ -150,7 +154,9 @@ def _selftest() -> int:
 
     for q, expect_kind in (("what time is it?", "time"), ("What's the time?", "time"),
                            ("what is the date", "date"), ("what day is it?", "date"),
-                           ("what's today's date?", "date"), ("time and date", "both")):
+                           ("what's today's date?", "date"), ("time and date", "both"),
+                           ("what day of the week is it?", "date"),
+                           ("which day is it?", "date")):
         got = answer(q, at) or ""
         if expect_kind == "time":
             ok = "six fifty-four" in got
