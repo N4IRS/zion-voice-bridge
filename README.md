@@ -47,6 +47,7 @@ hand-off takes 30–60 s and is spoken **later, out of band**, with no wake word
 | `tools_test.py` | tool-calling reliability check (15 trials, 3 tools, 1 negative control) |
 | `verify_test.py` | numeric-verification policy as a decision table (when *not* to check) |
 | `escalation_test.py` | routing policy: data→Muse vs reasoning→cloud, and hedge kinds |
+| `stream_test.py` | streaming TTS: sentence 1 returned early, and cancellation on barge-in |
 | `memory_test.py` | conversation memory: both turn shapes, the cap, `memory=off` |
 | `deploy/voice-bridge.service` | systemd user unit (unbuffered logs, restart backoff) |
 | `VOICE-BRIDGE.md` | the full design and build record, with measurements and traps |
@@ -57,6 +58,7 @@ Each module self-tests without hardware or network where it can:
 .venv/bin/python envelope.py        # 20 checks: the message contract
 .venv/bin/python verify_test.py     # 10 cases: when verification must not fire
 .venv/bin/python memory_test.py     # 9 checks: history shape and limits
+.venv/bin/python stream_test.py     # streaming: early handover, cancel on barge-in
 .venv/bin/python lanes.py --selftest
 HA_URL=http://<ha>:8123 .venv/bin/python ha.py   # needs a live Home Assistant
 MA_URL=ws://<ma>:8095/ws .venv/bin/python ma.py  # needs Music Assistant + token

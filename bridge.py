@@ -586,6 +586,7 @@ class Bridge:
 
     async def handle_start(self, conversation_id, flags, audio_settings, wake_word_phrase):
         self.turn += 1
+        self._cancel_stream_tasks()
         self._reset()
         self.conversation = conversation_id or ""
         self.t_start = time.monotonic()
@@ -614,6 +615,7 @@ class Bridge:
     async def handle_stop(self, aborted: bool) -> None:
         if aborted:
             log(f"[turn {self.turn}] aborted by controller")
+            self._cancel_stream_tasks()
             if self.task and not self.task.done():
                 self.task.cancel()
             self.send_event(ET.VOICE_ASSISTANT_RUN_END)
@@ -1513,6 +1515,20 @@ class Bridge:
         if holder["first"] is None:
             return ("Sorry, I didn't get an answer to that.", None, "stream-empty")
         return holder["first"], None, f"streamed (sentence 1 at {holder['first_at']:.2f}s)"
+
+    def _cancel_stream_tasks(self) -> None:
+        """Stop anything still generating or announcing from a previous turn.
+
+        Measured gap found in review: a barge-in (`VoiceAssistantRequest(start=False)`)
+        cancelled the turn's own task but not the sentence pump or the announcement
+        queue, so sentence 2 of a streamed reply could be spoken over the user. Any
+        new turn supersedes leftover speech for the same reason.
+        """
+        if self._bg_tasks:
+            log(f"cancelling {len(self._bg_tasks)} stream task(s) from the previous turn")
+        for task in list(self._bg_tasks):
+            task.cancel()
+        self._bg_tasks.clear()
 
     async def _speak_queue(self, queue: asyncio.Queue, turn: int) -> None:
         """Announce queued sentences in order, waiting out a busy device."""

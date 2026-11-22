@@ -13,7 +13,10 @@ substantial work before anything depends on it (§14).
 
 **Written:** 2026-11-21, on the machine it runs on.
 **Code:** `/srv/WorkSpace/voice-bridge/`
-**Host:** `the workshop host` (192.168.1.10) — called *Zion*
+**Host:** a Xeon E5-2637 v3 workstation — the ThinkStation, called *Zion*. Every LAN
+address in this document is illustrative (`192.168.1.x`); the deployment's are
+private and are supplied by flags. Sanitising them is why `192.168.1.10` appears in
+the traces where the real box used its own address.
 
 **Naming (owner, 2026-11-21):** **Zion** is the local system — whisper,
 Ollama and Piper on this machine. **Muse** is whatever answers from outside it —
@@ -58,7 +61,7 @@ Home Assistant uses.
 
 ```
                  LAN only ──────────────────────────────────────────────
-  Echo Dot 3 (emos firmware, wake word on device)
+  Echo Dot (2nd gen, board 'biscuit'; emos firmware, wake word on device)
         │
         │  ws://  /control (JSON)  /data (PCM)     device protocol
         ▼
@@ -70,7 +73,7 @@ Home Assistant uses.
         ├── Silero VAD                   endpointing (the backend's job)
         ├── faster-whisper base.en       speech → text
         ├── Ollama qwen2.5:3b            text → reply   (optional cloud lane)
-        └── Piper lessac-medium          reply → speech
+        └── Piper hfc_female-medium     reply → speech
         └── HTTP :8700                   serves the reply WAV the controller fetches
 ```
 
@@ -203,6 +206,7 @@ av              19.0.2    (only used by faster-whisper's file decoding, which we
 | `stream_probe.py` | the test that showed the controller buffers a growing WAV instead of playing it |
 | `clock.py` | the host clock as a tool: spoken time and date, 22 selftest checks |
 | `ma.py` | Music Assistant over its WebSocket API: play/transport/volume, `--selftest` |
+| `ha.py` | Home Assistant as a *tool* (§8.6): fuzzy lookup, allowlisted writes, imperative gate, `--selftest` |
 | `escalation_test.py` | routing policy: data→Muse vs reasoning→cloud, and hedge kinds |
 | `voices/en_US-hfc_female-medium.onnx` | deployed Piper voice (lessac and others also present) |
 | `lanes.py` | lane abstraction: `HttpLane` (sync) and `BusLane` (async), the `sync_capable` flag, and `--selftest` |
@@ -237,7 +241,7 @@ satellite-protocol server. Concretely, for each connected Dot it:
   and in `turns`/`device_logs` in SQLite.
 
 **We replaced:** only the voice backend. Everything in that list still runs
-unchanged, which is why OTA, LEDs, arbitation, music and timers keep working.
+unchanged, which is why OTA, LEDs, arbitration, music and timers keep working.
 
 **The consequence:** the controller's contract *is* our interface, and its
 behaviour on this hardware is now documented in §5 and §12.
@@ -465,7 +469,12 @@ Two related results from the same session:
   1.25 dB to 6 dB on one run of four; at `0.0` it was correct 4/4. The lanes
   default to 0.0 as a result.
 
-### 7.3.2 Neither lane has a clock
+### 7.3.2 Neither lane has a clock (superseded by §8.8)
+
+> **Superseded.** This section records the first fix — injecting the time into the
+> user turn — and why it was not good enough. The deployed mechanism is the
+> `host_clock` tool described in **§8.8**: the model asks the host, and nothing is
+> injected. Read this one for the reasoning, not for the implementation.
 
 Asked "what time is it?" the cloud model answered *"It is 3:47 PM, the workshop
 clock reads this time because its mechanical hands rotate in a precise circular
@@ -981,7 +990,11 @@ What the ThinkStation side provides as a result (all implemented):
 | a reply path already built | the bridge polls its own inbox every 5 s and announces what arrives |
 | backlog policy | her hook acts only on `voice-handoff` newer than its start, so the Nov-13 results and the stale ping are never actioned; the live ping stays as a canary |
 
-**Still open (Muse's side, not the bridge's):**
+**Still open (Muse's side, not the bridge's):** the hook should echo `in_reply_to`
+with each answer. It currently replies with a fresh correlation id and no
+`in_reply_to`, which the bridge survives by matching on subject plus time (§8.3) —
+but that resolves by arrival order, so two questions in flight at once could swap
+their answers.
 
 ### 8.4 Mode 3 — coexistence with Home Assistant
 
@@ -1258,6 +1271,11 @@ feature.
   not.
 - The sentence splitter requires ≥4 words before cutting, so "e.g." and abbreviations
   do not become announcements of one word.
+- **A barge-in now cancels the queued sentences.** Found in review: `start=False`
+  cancelled the turn's own task but not the sentence pump or its announcement queue, so
+  sentence 2 of a streamed reply could be spoken over the user. The same happens when a
+  new turn starts. Both now cancel any leftover stream tasks first; `stream_test.py`
+  asserts that cancelling mid-reply stops the announcements.
 
 ### 8.10 What the cloud lane is *not* for
 
@@ -1518,9 +1536,9 @@ docker exec ollama-p700 ollama pull qwen2.5:3b        # or via the API
 
 # 3. a Piper voice (63 MB)
 mkdir -p voices
-for f in en_US-lessac-medium.onnx en_US-lessac-medium.onnx.json; do
+for f in en_US-hfc_female-medium.onnx en_US-hfc_female-medium.onnx.json; do
   curl -sLO --output-dir voices \
-   "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/$f"
+   "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_female/medium/$f"
 done
 
 # 4. free the seat (HA) and run
