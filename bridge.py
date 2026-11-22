@@ -920,9 +920,9 @@ class Bridge:
             f"{lane.name}={'sync' if lane.sync_capable else 'async'}"
             for lane in self.brain.lanes
         ))
-        if self.brain.lanes.async_:
+        if self.brain.lanes.async_ and self.args.handoff == "off":
             log(
-                "async lanes are configured but not wired into turns yet: "
+                "hand-off is off, so these async lanes will not be used: "
                 + ", ".join(lane.name for lane in self.brain.lanes.async_)
             )
 

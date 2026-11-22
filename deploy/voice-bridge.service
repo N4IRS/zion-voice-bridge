@@ -1,0 +1,31 @@
+[Unit]
+Description=Zion voice bridge — local voice backend for EchoMuse satellite(s)
+Documentation=https://github.com/N4IRS/zion-voice-bridge
+# The controller container and the agent bus are both needed for a healthy start,
+# but neither is a hard dependency: the bridge reconnects on its own, and a bus
+# outage must not stop the Dot from answering locally.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/voice-bridge
+# Unbuffered: a block-buffered log looks frozen and reads as "it decoded nothing"
+# (that trap cost a whole debugging session on this bench).
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/voice-bridge/.venv/bin/python /opt/voice-bridge/bridge.py \
+    --host 192.168.1.10 --port 16001 \
+    --llm --tts --model qwen2.5:3b \
+    --muse --muse-agent muse --bus-url http://192.168.1.10:8765 \
+    --handoff auto --handoff-poll-s 5 \
+    --ha-url http://192.168.1.20:8123 \
+    --media-host 192.168.1.10
+# A missing controller or SDR means connect failure (exit 2); retry without
+# hot-looping, and give up until the next boot if it keeps failing.
+Restart=on-failure
+RestartSec=10
+StartLimitBurst=6
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=default.target

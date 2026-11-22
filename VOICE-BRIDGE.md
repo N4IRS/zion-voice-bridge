@@ -948,13 +948,31 @@ Useful flags:
 that isolates mic + whisper + Piper from the model. No `--tts` answers with a
 two-tone chime, which isolates the transport alone.
 
-### 10.3 Restart / stop
+### 10.3 Supervision (systemd)
+
+The bridge is a systemd **user** unit (`~/.config/systemd/user/voice-bridge.service`,
+template in the repo at `deploy/voice-bridge.service`). User-level because the agent
+bus and the controller plumbing already run that way here, and `Linger=yes` is set so
+it starts at boot without a login session.
+
+```bash
+systemctl --user enable --now voice-bridge.service
+systemctl --user restart voice-bridge.service
+journalctl --user -u voice-bridge -f          # per-turn log, live
+```
+
+`PYTHONUNBUFFERED=1` is not cosmetic: stdout to a file is block-buffered and a
+perfectly healthy run reads as a frozen log — that trap cost a session on this bench.
+`Restart=on-failure`, `RestartSec=10`, `StartLimitBurst=6` means a missing controller
+retries instead of hot-looping, and gives up until the next boot after six tries.
+
+### 10.4 Restart / stop by hand
 
 The bridge holds the seat; the controller's listener stays up regardless. Kill the
 process (`kill <pid>`) and restart — the controller accepts a new client
 immediately. There is no state to preserve.
 
-### 10.4 Health checks
+### 10.5 Health checks
 
 ```bash
 ss -tn | grep :16001                       # we are connected to the controller

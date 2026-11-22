@@ -91,6 +91,25 @@ done
 that device's ESPHome entry in Home Assistant before starting, or the connection is
 refused by design.
 
+## Run it as a service
+
+`deploy/voice-bridge.service` is a systemd **user** unit (the EchoMuse controller and
+the agent bus both run that way on this host). Adjust the paths and addresses, then:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/voice-bridge.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now voice-bridge.service
+
+loginctl enable-linger "$USER"      # so it starts at boot without a login
+journalctl --user -u voice-bridge -f
+```
+
+`Restart=on-failure` with `RestartSec=10` and `StartLimitBurst=6` means a missing
+controller retries rather than hot-looping, and `PYTHONUNBUFFERED=1` is set because a
+block-buffered log looks frozen and has already been mistaken for "it decoded nothing".
+
 ## Configuration and secrets
 
 Nothing sensitive is in this repo. Both tokens are read from files outside it:
