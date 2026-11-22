@@ -661,6 +661,15 @@ class Bridge:
         # 'auto' = also when the local answer looks like a hedge.
         return True
 
+    def _handoff_context(self, question: str) -> list[dict]:
+        """Recent turns in envelope shape: chat history is {"role","content"},
+        the envelope wants {"role","text"}. Getting this wrong raised
+        KeyError('text') on the first follow-up that also needed a hand-off."""
+        if self.args.memory == "off":
+            return []
+        return [{"role": t["role"], "text": t.get("content") or t.get("text") or ""}
+                for t in self.history_for(self.args.device_name, question)]
+
     def _handoff_lane(self):
         lanes = self.brain.lanes.async_
         return lanes[0] if lanes else None
@@ -691,9 +700,7 @@ class Bridge:
             max_words=30,
             hint="answer in one or two spoken sentences",
             conversation=self.conversation,
-            context=[{"role": t["role"], "text": t["text"]}
-                     for t in (self.history_for(self.args.device_name, question)
-                               if self.args.memory != "off" else [])],
+            context=self._handoff_context(question),
         )
         try:
             corr = await lane.submit(question, device=self.args.device_name, envelope=env)
