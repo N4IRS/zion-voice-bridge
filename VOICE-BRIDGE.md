@@ -985,6 +985,13 @@ this exchange) and `request.context` — up to three exchanges, each trimmed to 
 characters. Announced answers are written back into the history too, so a follow-up
 after *"Muse says: ..."* still has a referent.
 
+**Verified end to end 2026-11-21 20:45**, with a question that is meaningless in
+isolation — *"and the other one?"* — sent as an envelope carrying two context
+entries. Muse's worker answered *"The 20-meter dipole is the shorter one, so it needs
+less room than the 40-meter one"*, matched on the envelope correlation, and the Dot
+spoke it. A responder that reads the envelope needs no memory at all; a responder
+that keeps its own is an optimisation, and now demonstrably not a requirement.
+
 ## 9. Observability and failure behaviour
 
 **Bridge log, per turn** (`bridge.log`): wake conversation id, speech start/end
