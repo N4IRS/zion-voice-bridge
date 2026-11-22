@@ -1169,6 +1169,47 @@ Hedge routing follows the same split: *"I need Muse"* is a data deferral and goe
 her; *"I don't have real-time information"* is a knowledge gap and goes to the cloud
 lane first.
 
+### 8.7.2 The clock is a host tool, not model knowledge
+
+Design decision (owner): the model should **ask the host** for the time rather than be
+handed it or bypassed. So `host_clock(kind)` is offered whenever the turn is temporal,
+the bridge answers it from the OS in microseconds, and the model speaks the result.
+
+```python
+host_clock(kind: "time" | "date" | "both")
+  -> {"spoken": "It's ten fifty-nine at night."}      # one field, nothing else
+```
+
+The spoken form is spelled out ("six fifty-four in the evening", "the twenty-first of
+November, twenty twenty-six") because a synthesiser reads "6:54 PM" as two letters and
+"21st" inconsistently.
+
+**What this replaced, and why.** Before: the clock was injected into every prompt as
+`[current local time: …]`, which cost ~14 tokens on every turn and made the model
+append *"the current time is…"* to unrelated answers (observed three times). It also
+did not stop hallucination — asked without context it once answered *"It is 3:47 PM,
+the workshop clock reads this time because its mechanical hands rotate…"* at 18:48.
+There is no clock injection any more; the tool is the only source.
+
+**Two failure modes it exposed, both fixed:**
+
+| symptom | cause | fix |
+|---|---|---|
+| the model answered *"It's twenty-six hundred twenty-one year November twenty-first, two-hundred-twenty…"* | the tool result carried `{spoken, digits, iso}` and the model regurgitated all three | return **one** field; the verifier gets the digits bridge-side, not in the prompt |
+| *"how many days until Christmas"* looped: three steps, five clock calls, 20 s, no answer | the 3B would rather re-ask for the date than do date arithmetic | a repeated tool call now **escalates to the reasoning lane** on the first repeat (34 days, and the cloud is given the host date because it cannot call tools) |
+
+**Cost, measured:** a time question is two model steps, 5.4 s; a date question 6.4 s; a
+non-temporal question is unaffected (139 prompt tokens, 4.0 s). That is *slower* than
+answering from the OS directly — this is the price of letting the model own the
+decision, which was the point.
+
+**And it corrected the verification gate.** Verification used to be skipped for any
+turn that used a tool, on the assumption the numbers came from the tool.
+*"How many days until Christmas"* disproved that: the date came from the tool, the
+**84** did not (correct: 34). The rule is now precise — verify unless every number in
+the answer appears in the tool output, rounding allowed (`81.4` from `81.446` is fine,
+`84` from a date is not).
+
 ### 8.8 Conversation memory — the bridge owns it
 
 Every turn was stateless: Ollama keeps nothing, and the bus has no session concept,

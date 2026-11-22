@@ -51,6 +51,7 @@ import numpy as np
 from aioesphomeapi import APIClient
 from aioesphomeapi import VoiceAssistantEventType as ET
 
+import clock
 import envelope as env_schema
 from ha import (DO_TOOL, HA_TOOLS, LOOKUP_TOOL, HaError, HomeAssistant,
                 looks_imperative, wants_ha_tools)
@@ -87,6 +88,7 @@ SYSTEM_PROMPT = (
     "You are Zion, a voice assistant in an amateur radio workshop. "
     "Answer in at most two spoken sentences. Do arithmetic silently and state the "
     "result with the number. Be precise; do not guess. No lists or markdown. "
+    "For the current time or date, call host_clock; never guess one. "
     "If a question needs live data or knowledge you lack, call handoff — do not "
     "reply that you need Muse. handoff needs='data' means the user's own records "
     "(only Muse has them); needs='reasoning' means calculation or world facts. Do not mention the current time unless asked."
@@ -253,6 +255,25 @@ class SileroVad:
 # Offered to the local lane when `--handoff` is on. The model calls this when a
 # turn needs live facts or knowledge it does not have; the restated question is
 # what goes over the bus (it improves the answer and limits what leaves).
+#: The host owns the clock, so the model asks for it instead of guessing. The tool is
+#: only offered when the turn is temporal; a schema on every turn costs ~35 prompt
+#: tokens (~1 s here) for a fact most questions do not need.
+CLOCK_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "host_clock",
+        "description": "Current local time and/or date from the host. Use this for "
+                       "any question about now, today, or a date you need to compute with.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["time", "date", "both"]},
+            },
+            "required": ["kind"],
+        },
+    },
+}]
+
 # Deliberately terse. Every word here is paid on EVERY turn that offers the tool
 # (~40 tokens/s of prompt evaluation on this box), and the model only needs enough
 # to choose: the meanings live in the system prompt, which is cached.
@@ -331,6 +352,31 @@ VERIFY_SYSTEM = (
 def _numbers(text: str) -> set[str]:
     """Numeric tokens, normalised enough to compare two answers' claims."""
     return {m.group(0).rstrip(".") for m in re.finditer(r"\d+(?:\.\d+)?", text or "")}
+
+
+def _numeric(text: str) -> list[float]:
+    out = []
+    for token in _numbers(text):
+        try:
+            out.append(float(token))
+        except ValueError:
+            continue
+    return out
+
+
+def _covered_by(answer: str, tool_numbers: set[str]) -> bool:
+    """True when every number in the answer came from a tool (rounding allowed).
+
+    A model rounds "81.446" to "81.4" and reformats "22:57" from "22:57"; neither is
+    the model inventing a number. 84 days from a date the tool supplied is.
+    """
+    tools = _numeric(" ".join(tool_numbers))
+    if not tools:
+        return False
+    for value in _numeric(answer):
+        if not any(abs(value - t) <= max(0.5, abs(t) * 0.01) for t in tools):
+            return False
+    return True
 
 
 #: questions whose numbers come from the injected clock, not from the model
@@ -1075,7 +1121,8 @@ class Bridge:
 
     @staticmethod
     def should_verify(question: str, answer: str, used_tools: bool,
-                      mode: str = "numbers", cloud: bool = True) -> tuple[bool, str]:
+                      mode: str = "numbers", cloud: bool = True,
+                      tool_numbers: set[str] | None = None) -> tuple[bool, str]:
         """Whether to spend a cloud call checking this answer, and why not.
 
         Pure, so the policy is testable without a bridge, a model or a network.
@@ -1087,8 +1134,16 @@ class Bridge:
             return False, "verification is off"
         if not cloud:
             return False, "no cloud lane"
+        # A tool use is not a licence for arithmetic. "How many days until Christmas?"
+        # called the clock and then computed 84 days (correct: 34) — the date came from
+        # the tool, the number did not. So skip only when the answer's numbers are all
+        # numbers a tool returned, rounding included.
         if used_tools:
-            return False, "the numbers came from a tool, not the model"
+            if not _numbers(answer):
+                return False, "the answer contains no numbers"
+            if _covered_by(answer, tool_numbers or set()):
+                return False, "the answer only repeats numbers a tool returned"
+            return True, "the answer computed numbers beyond the tool result"
         question = (question or "").strip()
         if CLOCK_QUESTION.search(question):
             return False, "the numbers come from the injected clock"
@@ -1102,7 +1157,8 @@ class Bridge:
             return False, "the answer contains no numbers"
         return True, "the answer contains numbers"
 
-    def _should_verify(self, question: str, answer: str, used_tools: bool) -> bool:
+    def _should_verify(self, question: str, answer: str, used_tools: bool,
+                       tool_numbers: set[str] | None = None) -> bool:
         """Whether to spend a cloud call checking this answer's numbers.
 
         Measured failure this exists for: the local model answered a 3:1 SWR
@@ -1113,6 +1169,7 @@ class Bridge:
         decision, why = self.should_verify(
             question, answer, used_tools,
             mode=self.args.verify, cloud="cloud" in self.brain.lanes,
+            tool_numbers=tool_numbers or set(),
         )
         if not decision and why not in ("verification is off", "no cloud lane"):
             log(f"verify skipped: {why}")
@@ -1124,10 +1181,16 @@ class Bridge:
         if "cloud" not in self.brain.lanes:
             return None
         lane = self.brain.lanes["cloud"]
+        prompt = question
+        if clock.wants_time_context(question):
+            # the cloud lane cannot call host_clock, so a temporal question carries the
+            # date with it ("how many days until Christmas" needs today)
+            prompt = (f"{question}\n\n[host clock: "
+                      f"{datetime.datetime.now():%A %d %B %Y, %I:%M %p}]")
         try:
             reply = await lane.chat(
                 [{"role": "system", "content": VERIFY_SYSTEM},
-                 {"role": "user", "content": question}],
+                 {"role": "user", "content": prompt}],
                 max_tokens=self.args.verify_max_tokens,
             )
         except LaneError as exc:
@@ -1149,10 +1212,16 @@ class Bridge:
         cold on the same question is the only version that has measured right.
         """
         lane = self.brain.lanes["cloud"]
+        prompt = question
+        if clock.wants_time_context(question):
+            # the cloud lane cannot call host_clock, so a temporal question carries the
+            # date with it ("how many days until Christmas" needs today)
+            prompt = (f"{question}\n\n[host clock: "
+                      f"{datetime.datetime.now():%A %d %B %Y, %I:%M %p}]")
         try:
             reply = await lane.chat(
                 [{"role": "system", "content": VERIFY_SYSTEM},
-                 {"role": "user", "content": question}],
+                 {"role": "user", "content": prompt}],
                 max_tokens=self.args.verify_max_tokens,
             )
         except LaneError as exc:
@@ -1188,14 +1257,24 @@ class Bridge:
                 tools.append(DO_TOOL)
         if self.ma is not None and wants_music_tools(text):
             tools.extend(self.ma.tools())
-        context = time.strftime("%A %d %B %Y, %I:%M %p")
+        if clock.answer(text) or clock.wants_time_context(text):
+            tools.extend(CLOCK_TOOL)
+        # No clock injection. It cost ~14 tokens on every turn and made the model
+        # append "the current time is..." to unrelated answers (observed three times).
+        # The date now arrives only if the model asks for it via host_clock.
+        context = ""
         history = self.history_for(self.args.device_name, text)
         if history:
             log(f"[turn {turn}] carrying {len(history)} earlier turn(s) into the prompt")
+        tool_numbers: set[str] = set()
+        seen_calls: set[str] = set()
         messages = [{"role": "system", "content": self.args.system_prompt}]
         messages.extend(history)
-        messages.append(
-            {"role": "user", "content": f"{text}\n\n[current local time: {context}]"})
+        if context:
+            messages.append(
+                {"role": "user", "content": f"{text}\n\n[current local time: {context}]"})
+        else:
+            messages.append({"role": "user", "content": text})
         reply = None
         for step in range(3):
             try:
@@ -1218,10 +1297,10 @@ class Bridge:
                 f"tools={[c.get('function', {}).get('name') for c in reply.tool_calls]} "
                 f"text={reply.text[:60]!r}")
             if not reply.tool_calls:
-                used_tools = step > 0
                 final = reply.text
+                used_tools = step > 0
                 note = ""
-                if self._should_verify(text, final, used_tools):
+                if self._should_verify(text, final, used_tools, tool_numbers):
                     checked = await self._verify(text, final)
                     if checked:
                         verified, stats = checked
@@ -1247,6 +1326,19 @@ class Bridge:
                     args = json.loads(raw) if isinstance(raw, str) else (raw or {})
                 except json.JSONDecodeError:
                     args = {}
+                call_key = f"{name}:{json.dumps(args, sort_keys=True)}"
+                if call_key in seen_calls:
+                    # The model is looping on a fact it already has. Waiting for the
+                    # step limit costs ~10 s of speech delay, so break out now and let
+                    # the reasoning lane do the arithmetic.
+                    log(f"[turn {turn}] {name} repeated the same call; escalating")
+                    answered = await self._cloud_answer(text)
+                    if answered:
+                        log(f"[turn {turn}] loop -> reasoning lane: {answered[0][:70]!r}")
+                        return answered[0], None, "loop→reasoning"
+                    return ("Sorry, I got stuck working that one out.",
+                            None, "loop")
+                seen_calls.add(call_key)
                 if name == "handoff":
                     needs = self._effective_needs(str(args.get("needs") or "data"),
                                                   str(args.get("question") or text))
@@ -1276,14 +1368,38 @@ class Bridge:
                             log(f"[turn {turn}] reasoning escalation unavailable; "
                                 f"falling back to the agent lane")
                     return "", {"question": question, "needs": needs}, f"handoff ({needs})"
-                if name.startswith("music_"):
+                if name == "host_clock":
+                    kind = str(args.get("kind") or "both").lower()
+                    now = datetime.datetime.now()
+                    spoken = {"time": clock.spoken_time,
+                              "date": clock.spoken_date}.get(
+                        kind, lambda n: f"{clock.spoken_time(n)} {clock.spoken_date(n)}")(now)
+                    log(f"[turn {turn}] host_clock({kind}) -> {spoken!r}")
+                    # The model gets the spoken form and nothing else: handing it
+                    # {"spoken", "digits", "iso"} at once produced
+                    # "twenty-six hundred twenty-one year November twenty-first…"
+                    result = {"spoken": spoken}
+                    tool_digits = (now.strftime("%Y-%m-%d %H:%M") + " " + spoken)
+                elif name.startswith("music_"):
                     result = await self._run_music_tool(turn, name, args)
                 else:
                     result = self._run_ha_tool(turn, name, args)
+                tool_numbers |= _numbers(str(result) + " " + str(locals().get("tool_digits", "")))
+                tool_digits = ""
                 messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                  "content": json.dumps(result)[:700]})
         log(f"[turn {turn}] tool loop hit its step limit")
-        return (reply.text if reply else ""), None, "tool-limit"
+        spoken = (reply.text or "").strip() if reply else ""
+        if not spoken:
+            # Measured: given the clock tool, qwen2.5:3b loops asking for the date
+            # instead of doing date arithmetic. That is a reasoning failure, so hand
+            # it to the reasoning lane instead of apologising.
+            answered = await self._cloud_answer(text)
+            if answered:
+                log(f"[turn {turn}] tool loop -> reasoning lane: {answered[0][:70]!r}")
+                return answered[0], None, "tool-limit→reasoning"
+            return ("Sorry, I got stuck working that one out.", None, "tool-limit")
+        return spoken, None, "tool-limit"
 
     async def _run_music_tool(self, turn: int, name: str, args: dict) -> dict:
         if self.ma is None:

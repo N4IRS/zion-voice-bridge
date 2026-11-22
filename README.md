@@ -40,6 +40,7 @@ hand-off takes 30–60 s and is spoken **later, out of band**, with no wake word
 | `bridge.py` | the service: seat claim, VAD, turns, tools, hand-off, announcements |
 | `lanes.py` | answer lanes — `HttpLane` (sync) and `BusLane` (async), with the `sync_capable` flag |
 | `envelope.py` | the message contract (v1) for hand-offs and answers: TTL, correlation, typed errors |
+| `clock.py` | the host clock as a tool: spoken time/date, no model guesswork |
 | `ma.py` | Music Assistant, direct over its WS API: play/transport/volume, spoken target resolution |
 | `ha.py` | Home Assistant as a *tool*: fuzzy lookup, safe writes, imperative gate |
 | `probe.py` | frozen minimal transport probe (no AI) used to prove the seam |

@@ -20,8 +20,8 @@ CASES = [
     ("What are you?", "I am Zion, the local assistant.", False, "numbers", False),
     # numbers we supplied
     ("What time is it?", "It is 9:04 PM.", False, "numbers", False),
-    # numbers a tool supplied
-    ("How warm is the office?", "81.4 degrees.", True, "numbers", False),
+    # numbers a tool supplied — including the rounding a model does
+    ("How warm is the office?", "It is 81.4 degrees.", True, "numbers", False),
     # nothing numeric to check
     ("What is a balun?", "A balun converts balanced to unbalanced.", False, "numbers", False),
     # switches
@@ -32,13 +32,26 @@ CASES = [
      "Eight percent reflected, about half a dB loss.", False, "numbers", True),
 ]
 
+#: the numbers a Home Assistant lookup returns for "how warm is the office?"
+TOOL_NUMBERS = {"81.446", "unavailable"}
+
 failures = 0
 for question, answer, tools, mode, expect in CASES:
-    got, why = Bridge.should_verify(question, answer, tools, mode=mode, cloud=True)
+    got, why = Bridge.should_verify(question, answer, tools, mode=mode, cloud=True,
+                                    tool_numbers=TOOL_NUMBERS)
     ok = got == expect
     failures += 0 if ok else 1
     print(f"{'ok  ' if ok else 'FAIL'} verify={got!s:5s} expect={expect!s:5s} "
           f"[{why}] {question[:54]!r}")
+
+# a tool result is not a licence for arithmetic: the date came from the clock, the
+# 84 days did not (correct: 34)
+got, why = Bridge.should_verify("How many days until Christmas?",
+                                "There are 84 days until Christmas.", True,
+                                mode="numbers", cloud=True,
+                                tool_numbers={"2026", "11", "21", "22", "57"})
+print(f"{'ok  ' if got is True else 'FAIL'} computed on top of a tool -> verify  [{why}]")
+failures += 0 if got is True else 1
 
 # a missing cloud lane can never verify
 got, why = Bridge.should_verify("how many dB?", "3 dB", False, mode="numbers", cloud=False)
