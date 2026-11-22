@@ -438,6 +438,9 @@ class Brain:
         self.piper = None
         self.piper_rate = 22050
         self._tts_lock = threading.Lock()      # PiperVoice is not documented thread-safe
+        self._fallback = None                 # second whisper model, loaded on demand
+        self._fallback_tried = False
+        self._fallback_lock = threading.Lock()
         self.lanes = self._build_lanes()
         self.local = self.lanes["local"]
 
@@ -499,6 +502,14 @@ class Brain:
                 device="cpu",
                 compute_type="int8",
                 cpu_threads=self.args.threads,
+                # Measured: with the model already in the HuggingFace cache, this
+                # constructor still opens an HTTPS session to the Hub on every
+                # start (108.138.246.x:443, ~2 kB up / 7.7 kB down). That single
+                # call made "nothing leaves the LAN" false. HF_HUB_OFFLINE=1 in
+                # the unit covers the library's other paths; this covers the one
+                # call the bridge actually makes, so a shell without the env var
+                # cannot reintroduce it.
+                local_files_only=True,
             )
             log(f"whisper {self.args.whisper_model} loaded in {time.monotonic() - t:.1f} s")
         if self.args.tts:
@@ -509,10 +520,9 @@ class Brain:
             self.piper_rate = self.piper.config.sample_rate
             log(f"piper {os.path.basename(self.args.piper_voice)} loaded in {time.monotonic() - t:.1f} s ({self.piper_rate} Hz)")
 
-    def transcribe(self, pcm: bytes) -> tuple[str, float]:
-        audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-        t = time.monotonic()
-        segments, _info = self.whisper.transcribe(
+    def _transcribe_with(self, model, audio) -> tuple[str, float]:
+        """Transcribe with one model; return the text and its worst logprob."""
+        segments, _info = model.transcribe(
             audio,
             beam_size=1,
             language="en",
@@ -520,7 +530,68 @@ class Brain:
             condition_on_previous_text=False,
             initial_prompt=self.args.initial_prompt or None,
         )
-        text = " ".join(s.text.strip() for s in segments).strip()
+        seen: list[str] = []
+        worst = 0.0
+        for segment in segments:          # the work happens while iterating
+            seen.append(segment.text.strip())
+            worst = min(worst, segment.avg_logprob)
+        return " ".join(part for part in seen if part).strip(), worst
+
+    def _stt_unsure(self, text: str, logprob: float) -> bool:
+        """Should a bigger model re-hear this?
+
+        base.en's worst-segment logprob on this bench's *good* transcripts sat at
+        -0.40 .. -0.63. The transcript that reached the Dot as "ASM Muse was not
+        much schedule" measured -0.885, so the threshold is -0.75. That is two
+        turns of evidence, not a calibration - hence --stt-confidence, so it can
+        be moved without editing code.
+        """
+        model = getattr(self.args, "whisper_fallback", None)
+        if not model or model == "off":
+            return False
+        if model == getattr(self.args, "whisper_model", None):
+            return False          # re-running the same model proves nothing
+        if not (text or "").strip():
+            return True                   # nothing recognised: give the bigger one a turn
+        return logprob < getattr(self.args, "stt_confidence", -0.75)
+
+    def _fallback_model(self):
+        """Load the second model once, on first need. Never mid-turn on a lock."""
+        with self._fallback_lock:
+            if not self._fallback_tried:
+                self._fallback_tried = True
+                from faster_whisper import WhisperModel   # imported here by load()
+                try:
+                    t = time.monotonic()
+                    self._fallback = WhisperModel(
+                        self.args.whisper_fallback, device="cpu", compute_type="int8",
+                        cpu_threads=self.args.threads, local_files_only=True,
+                    )
+                    log(f"whisper fallback {self.args.whisper_fallback} loaded in "
+                        f"{time.monotonic() - t:.1f} s")
+                except Exception as exc:  # noqa: BLE001
+                    log(f"whisper fallback {self.args.whisper_fallback} unavailable "
+                        f"({exc!r}); pre-fetch it or pass --whisper-fallback off")
+                    self._fallback = None
+        return self._fallback
+
+    def transcribe(self, pcm: bytes) -> tuple[str, float]:
+        audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+        t = time.monotonic()
+        text, logprob = self._transcribe_with(self.whisper, audio)
+        if self._stt_unsure(text, logprob):
+            alt = getattr(self.args, "whisper_fallback", "small.en")
+            log(f"stt: {self.args.whisper_model} unsure (logprob {logprob:.3f} < "
+                f"{getattr(self.args, 'stt_confidence', -0.75):.2f}) on {text[:50]!r}; "
+                f"re-hearing with {alt}")
+            model = self._fallback_model()
+            if model is not None:
+                t2 = time.monotonic()
+                retry, retry_logprob = self._transcribe_with(model, audio)
+                log(f"stt: {alt} {time.monotonic() - t2:.2f} s "
+                    f"logprob {retry_logprob:.3f}: {retry[:60]!r}")
+                if retry:
+                    text = retry
         return text, time.monotonic() - t
 
     async def ask(self, text: str, tools: list[dict] | None = None):
@@ -1347,6 +1418,16 @@ class Bridge:
                         log(f"[turn {turn}] retry failed: {exc}")
                         return ("Sorry, I got confused by that one.",
                                 None, "tool-syntax")
+                    # The retry can return the SAME syntax, and qwen2.5:3b does it
+                    # deterministically: "ask Muse what's on my schedule" with no
+                    # handoff tool emitted `handoff needs='data'` on both passes,
+                    # and this line spoke it out loud on the Dot. Tool syntax is
+                    # never an answer - if the model wants a tool it does not have,
+                    # say so in words.
+                    if TOOL_SYNTAX.search(final or ""):
+                        log(f"[turn {turn}] retry still emitted tool syntax "
+                            f"({final[:40]!r}); refusing to speak it")
+                        return self._no_source_line(), None, "tool-syntax (twice)"
                 used_tools = step > 0
                 note = ""
                 if self._should_verify(text, final, used_tools, tool_numbers):
@@ -1432,7 +1513,12 @@ class Bridge:
                 elif name.startswith("music_"):
                     result = await self._run_music_tool(turn, name, args)
                 else:
-                    result = self._run_ha_tool(turn, name, args, question)
+                    # `text` is this function's parameter. `question` is only
+                    # assigned inside the handoff branch below, so passing it here
+                    # was an UnboundLocalError on every HA tool call - caught live
+                    # on the Dot, not by guard_test, which called the tool
+                    # function directly and never executed this line.
+                    result = self._run_ha_tool(turn, name, args, text)
                 tool_numbers |= _numbers(str(result) + " " + str(locals().get("tool_digits", "")))
                 tool_digits = ""
                 messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
@@ -1475,6 +1561,20 @@ class Bridge:
 
     #: answered from code, never predicted.
     FAST_PATHS = (("calc", calc.answer), ("clock", clock.answer))
+
+    def _no_source_line(self) -> str:
+        """What to say when the model reached for a tool it does not have.
+
+        Honest by construction: it names where the answer would have come from
+        instead of pretending to know. With hand-off off, saying "I can't check
+        that here" is the whole point of running local-only - the alternative,
+        measured on 2026-11-22, was inventing "Muse had no scheduled activities
+        today" from a misheard transcript.
+        """
+        name = self.args.muse_name or "Muse"
+        if self.args.handoff != "off" and self.brain.lanes.async_:
+            return f"I couldn't reach {name} for that one."
+        return f"That needs {name}, and it isn't available right now."
 
     async def _answer_streaming(self, messages: list[dict], turn: int, question: str):
         """Hand back sentence 1 as soon as it exists; announce the rest as they arrive.
@@ -1731,7 +1831,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--llm", action="store_true", help="answer with Ollama (implies --stt)")
     p.add_argument("--tts", action="store_true", help="speak with piper (else a chime)")
 
-    p.add_argument("--whisper-model", default="base.en")
+    # small.en, not base.en: measured 2026-11-22 on real Dot audio, base.en's
+    # transcript for a single sentence varied run to run ("S mu is what I must
+    # schedule", "Ask news what's on my schedule", "Ask me what's on my
+    # schedule") while small.en was stable and correct every time. ~1.9 s per
+    # utterance instead of ~0.6 s; correctness is worth the 1.3 s here.
+    p.add_argument("--whisper-model", default="small.en")
     p.add_argument("--initial-prompt", default=ASR_PROMPT,
                    help="whisper vocabulary hint; '' to disable")
     p.add_argument("--threads", type=int, default=8)
@@ -1788,6 +1893,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--music-target", default="Satellite-1",
                    help="default speaker when the request does not name one")
 
+    p.add_argument("--whisper-fallback", default="small.en",
+                   help="second model re-hears a low-confidence transcript ('off' to disable)")
+    p.add_argument("--stt-confidence", type=float, default=-0.75,
+                   help="logprob below which the transcript is re-heard by the fallback model")
     p.add_argument("--fastpath", choices=("on", "off"), default="on",
                    help="answer clock/date and the workshop's formulas in code, not the model")
     p.add_argument("--clock-tool", dest="clock_tool", action="store_true", default=False,

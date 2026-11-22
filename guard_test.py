@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 
 from bridge import Bridge, SYSTEM_PROMPT
@@ -105,6 +106,71 @@ async def main() -> int:
     check("real instruction still writes",
           result.get("ok") is True and len(bridge.ha.calls) == 1,
           f"{bridge.ha.calls}")
+
+    # 4. Tool syntax must never be spoken, even when the model emits it twice.
+    #    Measured on the Dot: with hand-off off, "ask Muse what's on my schedule"
+    #    made qwen2.5:3b write `handoff needs='data'` as text, on both the first
+    #    pass and the retry, and the retry path spoke it. That is the 2026-11-21
+    #    "handoff needs data" bug returning through a different door.
+    from bridge import TOOL_SYNTAX
+
+    class SyntaxReply:
+        text = "handoff needs='data'"
+        tool_calls: list = []
+        latency_s = 0.01
+        stats: dict = {}
+
+    async def syntax_lane(messages, tools=None):
+        return SyntaxReply()
+
+    bridge.brain.lanes.answer_lane("local").chat = syntax_lane
+    spoken, _, note = await bridge._answer("Ask Muse what's on my schedule.", 1)
+    check("tool syntax is never spoken",
+          not TOOL_SYNTAX.search(spoken or "") and "Muse" in (spoken or ""),
+          f"{spoken!r} [{note}]")
+
+    # 5. The turn loop itself. The regression this catches was real: _run_ha_tool
+    #    was correct in isolation but the CALL SITE in _answer passed a variable
+    #    that only exists in another branch, so every HA tool call died with
+    #    UnboundLocalError on the Dot while guard_test stayed green. Driving
+    #    _answer with a stubbed lane executes the line that broke.
+    class FakeReply:
+        def __init__(self, text="", tool_calls=None):
+            self.text = text
+            self.tool_calls = tool_calls or []
+            self.latency_s = 0.01
+            self.stats = {}
+
+    calls: list[str] = []
+
+    def make_lane(first_call: str, args: dict):
+        async def chat(messages, tools=None):
+            if not any(m.get("role") == "tool" for m in messages):
+                calls.append(first_call)
+                return FakeReply(tool_calls=[
+                    {"id": "c1", "function": {"name": first_call,
+                                              "arguments": json.dumps(args)}}])
+            return FakeReply(text="done")
+        return chat
+
+    for utterance, tool, tool_args, should_write in (
+            ("Is the patio light on?", "ha_lookup", {"query": "patio light"}, False),
+            ("Turn off the office fan.", "ha_do",
+             {"query": "office fan", "service": "turn_off"}, True)):
+        calls.clear()
+        bridge.ha.calls.clear()
+        bridge.brain.lanes.answer_lane("local").chat = make_lane(tool, tool_args)
+        try:
+            reply, _, note = await bridge._answer(utterance, 1)
+            ok = True
+            detail = f"reply={reply[:24]!r}"
+        except Exception as exc:                      # noqa: BLE001
+            ok = False
+            detail = f"{type(exc).__name__}: {exc}"
+        wrote = len(bridge.ha.calls) > 0
+        check(f"turn loop runs {tool} for {utterance[:28]!r}",
+              ok and calls == [tool] and wrote == should_write,
+              detail + f" wrote={wrote}")
 
     # 4. reads are never gated: a question may read
     result = bridge._run_ha_tool(1, "ha_lookup", {"query": "patio light"}, "Is the patio light on?")

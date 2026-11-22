@@ -1552,6 +1552,85 @@ prompt or routing problem, not a gating problem, and it is recorded rather than 
 — inventing a third regex to catch it would be the same class of guess the fast paths
 were built to remove.
 
+### 8.15 Hearing: why `small.en`, and why the hybrid gate failed
+
+A local-only test on 2026-11-22 produced this on the Dot:
+
+```
+STT: 'ASM Muse was not much schedule.'
+answer: 'ASM Muse had no scheduled activities today.'
+```
+
+The operator had said *"Ask Muse what's on my schedule."* Three separate faults were
+in that one exchange, and only the third was in the bridge.
+
+**1. `base.en` was not merely wrong, it was unstable.** The same 4.32 s clip, replayed:
+
+| run | transcript |
+|---|---|
+| live | "ASM Muse was not much schedule." |
+| replay 1 | "S mu is what I must schedule." |
+| replay 2 | "Ask news what's on my schedule" |
+| replay 3 | "Ask me what's on my schedule" |
+
+`small.en` returned *"Ask Muse what's on my schedule."* every time. So the model is now
+`small.en` by default: a **flat ~1.9 s per utterance** against ~0.6 s for `base.en`, and
+not proportional to length (3.3 s, 4.3 s and 7.2 s clips all measured 1.82–2.09 s).
+`cpu_threads=16` was *slower* than 8 (2.1–2.6 s), so it stays at 8. A clock question now
+takes ~2.1 s instead of ~0.8 s — still far from the 14.5 s it was before §8.13.
+
+**2. The confidence gate that was supposed to keep `base.en` did not work,** and this is
+the part worth keeping. The plan was: `base.en`, and re-hear only when its own logprob
+says it is unsure. Measured, the signal cannot separate the two cases:
+
+    good transcripts on this bench   -0.310  -0.371  -0.401  -0.502  -0.509  -0.584  -0.634
+    the mishearings                  -0.715  -0.744  -0.885
+
+The gap between the worst good transcript (−0.634) and the best bad one (−0.715) is
+0.08 nats. Any threshold there is noise, and the first threshold tried (−0.75) missed a
+live bad case outright. The machinery is kept (`--whisper-fallback`, `--stt-confidence`)
+because the gate may work on other audio, but `small.en` is the primary model and the
+gate is a no-op when the fallback equals the primary — re-running the same model proves
+nothing.
+
+**Domain hotwords were tried and rejected as a fix.** Biasing the decoder with
+"Music Assistant. Satellite-1…" made the bad clip decode perfectly *and* raised its
+confidence to −0.248 — tempting. But the short list (proper nouns only) produced
+*"Yes, Muse was on my schedule."* and on junk audio the bias **injected** our vocabulary
+into non-speech ("and they… there's a very good point of work" became *"Music
+Assistant."*). A decode that depends on the exact contents of a hint list is a lottery,
+not a fix. `--initial-prompt` is worse still: it turned the bad clip into *"Yes, Muse was
+on my schedule."*
+
+**3. The bridge answered the mishearing, and separately spoke a tool call as text.**
+With hand-off off there is no Muse tool, so `qwen2.5:3b` writes `handoff needs='data'` as
+literal prose — deterministically, on both the first pass and the retry — and the retry
+path spoke whatever came back without re-checking. That is the 2026-11-21 "handoff needs
+data" bug returning through a different door. Now the retry result is re-checked against
+`TOOL_SYNTAX` and the turn says something true instead:
+
+    "That needs Muse, and it isn't available right now."
+
+`guard_test.py` covers it with a stub lane that returns the syntax twice, and a real-model
+check confirmed the sentence. The lesson is the same one as §8.14: never let model output
+reach the speaker on the assumption that it will be well-formed.
+
+#### And the thing that made "nothing leaves the LAN" false
+
+Chasing "did the bridge query Muse?" (it had not) turned up an established connection to
+`108.138.246.x:443` from the bridge process. Not the model, not a lane: **`WhisperModel()`
+opens an HTTPS session to the HuggingFace Hub on every start, even with the model
+cached** — ~2 kB up, 7.7 kB down, each launch, including on the systemd service. Isolated
+by loading the VAD, piper and whisper separately (only whisper did it) and by its open
+fds (`~/.cache/Microsoft/DeveloperTools/.onnxruntime/onnxruntime.db` belongs to the VAD's
+onnxruntime, which was innocent).
+
+Fixed twice: `local_files_only=True` on the `WhisperModel` call, and `HF_HUB_OFFLINE=1`
+in the unit. Verified with the env var *absent* — no egress in 30 s, and whisper now loads
+in 0.5 s instead of 1.0 s because it is not waiting on a network check. Any future
+"fully local" claim should be made by watching `ss -tnp` on the process, not by reading
+the config.
+
 ## 9. Observability and failure behaviour
 
 **Bridge log, per turn** (`journalctl --user -u voice-bridge`): wake conversation id, speech start/end
@@ -1736,6 +1815,9 @@ Each of these cost a cycle, and each looks like something else.
 | The Dot answered in 5-6 s with a number the model guessed | a fact the OS or arithmetic already knows was routed through two model passes | clock and the workshop formulas are answered in code, 0.000 s (§8.13) |
 | The Dot switched the fan on after a remark | the write tool was offered on every turn, so the model could pick it; `ha.do()` has no check | `ha_do` is only offered on an instruction, and the dispatcher refuses it otherwise (§8.14, `guard_test.py`) |
 | A benchmark "proved" a cost that was an ordering artefact | the flip test primed with one set and measured the same one, so its "alternating" group was a warm repeat | prime each measured call with a *different* prefix, and measure both sizes — the penalty was real, its cause was not (§8.14) |
+| The Dot answered a sentence nobody said | base.en's transcript was unstable on real Dot audio, and the local model answered the garbage confidently | `small.en` by default; a logprob gate could not separate good from bad (−0.634 vs −0.715) and hotwords were a lottery (§8.15) |
+| The Dot said "handoff needs='data'" again | the retry-without-tools path spoke whatever came back, without re-checking for tool syntax | the retry result is re-checked; the turn says "That needs Muse, and it isn't available right now" |
+| "Nothing leaves the LAN" while `ss` showed :443 | `WhisperModel()` contacts the HuggingFace Hub on every start even when cached | `local_files_only=True` + `HF_HUB_OFFLINE=1`; verify with `ss -tnp`, never with the config |
 | The Dot said "handoff needs data" | the model wrote tool-call syntax as text, and the phrasing "day of the week" matched no date pattern so no tool was offered | pattern extended; tool syntax in an answer is detected and never spoken (§8.8) |
 | First follow-up that also needed a hand-off failed with `KeyError('text')` | chat history is `{"role","content"}`, the envelope wants `{"role","text"}` — two shapes, one confusion | `_handoff_context()` maps between them; `memory_test.py` asserts both shapes (memory_test.py was written after the bug, not before) |
 | Every envelope answer is dropped as "past its TTL" | `is_expired()` was applied to the *answer*, which carries no `ttl_s` and so fails safe as expired | age the pending entry against the request's TTL instead (§8.3.1) |
