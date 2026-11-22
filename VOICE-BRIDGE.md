@@ -1026,6 +1026,55 @@ less room than the 40-meter one"*, matched on the envelope correlation, and the 
 spoke it. A responder that reads the envelope needs no memory at all; a responder
 that keeps its own is an optimisation, and now demonstrably not a requirement.
 
+## 8.8 Numeric verification — the answer the assistant could get wrong
+
+The local 3B is not usually wrong, but when it is wrong it is **confident**: asked
+what a 3:1 SWR reflects it said *"eight percent reflected, about half a dB loss"*,
+and asked the same thing later, *"94% transmitted, 6% reflected"*. Neither is a hedge,
+so the hedge trigger never fires. This is the one remaining way the assistant can
+teach you something false about your own antenna.
+
+**The rule:** if the local answer contains a number and the turn was factual, the
+cloud lane re-answers the question cold and its answer is spoken. Measured cost
+~0.7–2.1 s, and only on turns that produce numbers.
+
+**It re-asks; it does not ask "is this right?"** Showing the model the candidate made
+it anchor: asked to check *"25% reflected, about 6 dB"* it "corrected" it to
+**11.1%** — which is the answer for SWR **2:1**. Re-asking cold, with room to show its
+working and an extractable final line, is the only version that measured right:
+
+```
+system   You are a radio engineering expert. Keep any working to at most two short
+         lines, then end with one single line exactly of the form:
+         ANSWER: <one short spoken sentence containing every number asked for>
+user     With an SWR of 3 to 1, what percentage of my power is reflected and how many dB do I lose?
+reply    … Γ = (3-1)/(3+1) = 0.5 …
+         ANSWER: You lose 1.25 dB with 25 percent of power reflected.     ← spoken
+```
+
+Two traps found while building it, both already known in other forms:
+
+- **A word cap destroys the arithmetic.** *"At most 25 spoken words"* made the
+  verifier answer 11.1% (2:1) — the same failure as the earlier "under 25 words"
+  prompt. It needs room to compute and a short line to speak, not a short answer.
+- **Too small a token budget cut the `ANSWER:` line off** and the reply became an
+  unparseable wall of working. If no `ANSWER:` line comes back, the local answer is
+  kept rather than speaking the working.
+
+**When it must NOT fire** (`Bridge.should_verify`, pure and tested in
+`verify_test.py`, 10 cases):
+
+| skip | because |
+|---|---|
+| numbers came from a tool | they are HA's reading, not the model's arithmetic |
+| the question asks for the time/date | those numbers are the injected clock |
+| the question is about local context ("you", "Zion", "Muse", "this machine") | a cold cloud answer has no context: asked *"tell me about Zion"* it replaced a correct answer with **"Zion National Park is 229 square miles"** |
+| the answer repeats the injected clock | it is using context the cloud cannot see |
+| the answer has no numbers | nothing to check |
+
+Spelled-out numbers count: the original failure — *"eight percent… half a dB"* — has
+no digits in it at all.
+
 ## 9. Observability and failure behaviour
 
 **Bridge log, per turn** (`bridge.log`): wake conversation id, speech start/end

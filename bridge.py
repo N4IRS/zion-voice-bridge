@@ -303,6 +303,41 @@ FOLLOWUP_PREFIXES = ("and ", "what about", "how about", "the other", "same ",
 FOLLOWUP_MARKERS = (" it", " its", " that", " those", " them", " they",
                     " the other", " instead", " again", " both", " either")
 
+#: verification prompt. The model must have room to work: a word cap made it skip
+#: the arithmetic entirely (it answered "11.1%" for SWR 3:1, which is the answer for
+#: 2:1), and a truncated budget cut the final line off. Two lines of working plus an
+#: extractable ANSWER line is the version that measured right.
+VERIFY_SYSTEM = (
+    "You are a radio engineering expert. Keep any working to at most two short lines, "
+    "then end with one single line exactly of the form:\n"
+    "ANSWER: <one short spoken sentence containing every number asked for>"
+)
+
+#: questions whose numbers come from the injected clock, not from the model
+CLOCK_QUESTION = re.compile(
+    r"^(what|which)\s+(time|date|day)\b|what day is it|today'?s date|"
+    r"what is the date", re.IGNORECASE)
+
+#: A number the model produced is worth a second opinion; a number it was told is
+#: not. Spelled-out numbers count: the exact failure this exists for was "eight
+#: percent reflected, about half a dB loss", which contains no digits at all.
+HAS_NUMBER = re.compile(
+    r"\d|\b(zero|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|"
+    r"forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|half|"
+    r"quarter|percent)\b", re.IGNORECASE)
+
+#: questions where the LOCAL context is the authority, not the wider world. A cold
+#: cloud re-answer has no idea that "Zion" is this machine — it answered "Zion
+#: National Park is 229 square miles" and that replaced a correct local answer.
+SELF_REFERENTIAL = re.compile(
+    r"\b(you|your|yours|yourself|zion|muse|workshop|satellite|this machine|"
+    r"this box|my station|my setup|here)\b", re.IGNORECASE)
+
+#: an answer repeating the injected clock is using context the cloud cannot see
+CLOCK_IN_ANSWER = re.compile(r"\b\d{1,2}:\d{2}\s*(am|pm)\b|\b(mon|tues|wednes|thurs|fri|satur|sun)day\b",
+                             re.IGNORECASE)
+
 
 class Brain:
     """whisper -> ollama -> piper, each stage optional."""
@@ -944,6 +979,77 @@ class Bridge:
             return True
         return any(marker in padded for marker in FOLLOWUP_MARKERS)
 
+    @staticmethod
+    def should_verify(question: str, answer: str, used_tools: bool,
+                      mode: str = "numbers", cloud: bool = True) -> tuple[bool, str]:
+        """Whether to spend a cloud call checking this answer, and why not.
+
+        Pure, so the policy is testable without a bridge, a model or a network.
+        Measured failure it exists for: the local model answered a 3:1 SWR question
+        with "eight percent reflected, half a dB" — confidently wrong, never a
+        hedge, so no other trigger catches it.
+        """
+        if mode == "off":
+            return False, "verification is off"
+        if not cloud:
+            return False, "no cloud lane"
+        if used_tools:
+            return False, "the numbers came from a tool, not the model"
+        question = (question or "").strip()
+        if CLOCK_QUESTION.search(question):
+            return False, "the numbers come from the injected clock"
+        if SELF_REFERENTIAL.search(question):
+            return False, "the question is about local context"
+        if CLOCK_IN_ANSWER.search(answer or ""):
+            return False, "the answer uses the injected clock"
+        if mode == "always":
+            return True, "always"
+        if not HAS_NUMBER.search(answer or ""):
+            return False, "the answer contains no numbers"
+        return True, "the answer contains numbers"
+
+    def _should_verify(self, question: str, answer: str, used_tools: bool) -> bool:
+        """Whether to spend a cloud call checking this answer's numbers.
+
+        Measured failure this exists for: the local model answered a 3:1 SWR
+        question with "eight percent reflected, half a dB" — confidently wrong,
+        and never a hedge, so nothing else catches it. A question the model was
+        *told* (the clock) or read from a tool (a sensor) is not at risk.
+        """
+        decision, why = self.should_verify(
+            question, answer, used_tools,
+            mode=self.args.verify, cloud="cloud" in self.brain.lanes,
+        )
+        if not decision and why not in ("verification is off", "no cloud lane"):
+            log(f"verify skipped: {why}")
+        return decision
+
+    async def _verify(self, question: str, candidate: str) -> tuple[str, dict] | None:
+        """Ask the cloud lane the same question, WITHOUT showing it the local answer.
+
+        The candidate is deliberately withheld. Shown one, the model anchored on it:
+        asked to check "25% reflected, about 6 dB" it "corrected" it to
+        "11.1% reflected, 6 dB" — worse than the answer it was checking. Re-answering
+        cold on the same question is the only version that has measured right.
+        """
+        lane = self.brain.lanes["cloud"]
+        try:
+            reply = await lane.chat(
+                [{"role": "system", "content": VERIFY_SYSTEM},
+                 {"role": "user", "content": question}],
+                max_tokens=self.args.verify_max_tokens,
+            )
+        except LaneError as exc:
+            log(f"verify: cloud lane failed ({exc}); keeping the local answer")
+            return None
+        match = re.search(r"ANSWER:\s*(.+)", reply.text, re.IGNORECASE | re.DOTALL)
+        spoken = match.group(1).strip().splitlines()[0].strip() if match else ""
+        if not spoken:
+            # never speak a wall of working; an unusable reply means keep what we have
+            log("verify: no ANSWER: line in the reply; keeping the local answer")
+            return None
+        return spoken, reply.stats
+
     async def _answer(self, text: str, turn: int):
         """Answer a turn, running tools if the question wants them.
 
@@ -979,7 +1085,22 @@ class Bridge:
                 f"tools={[c.get('function', {}).get('name') for c in reply.tool_calls]} "
                 f"text={reply.text[:60]!r}")
             if not reply.tool_calls:
-                return reply.text, None, ""
+                used_tools = step > 0
+                final = reply.text
+                note = ""
+                if self._should_verify(text, final, used_tools):
+                    checked = await self._verify(text, final)
+                    if checked:
+                        verified, stats = checked
+                        if verified.strip() != final.strip():
+                            log(f"[turn {turn}] verify corrected the answer: "
+                                f"{final!r} -> {verified!r} {stats}")
+                            note = "verified (corrected)"
+                        else:
+                            note = "verified (agreed)"
+                        final = verified
+                        self.verify_stats = getattr(self, "verify_stats", 0) + 1
+                return final, None, note
             messages.append({"role": "assistant", "content": reply.text or None,
                              "tool_calls": reply.tool_calls})
             for call in reply.tool_calls:
@@ -1196,6 +1317,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ha-url", default="http://192.168.1.20:8123")
     p.add_argument("--ha-token", default="~/.config/voice-bridge/ha-token")
 
+    p.add_argument("--verify-max-tokens", type=int, default=400,
+                   help="room for the verifier to show its working before the ANSWER line")
+    p.add_argument("--verify", choices=("off", "numbers", "always"), default="numbers",
+                   help="have the cloud lane re-answer a local answer that contains "
+                        "numbers (the local model is confidently wrong on arithmetic)")
     p.add_argument("--memory", choices=("off", "auto", "always"), default="auto",
                    help="carry recent turns: only for follow-ups (auto), always, or never")
     p.add_argument("--memory-turns", type=int, default=3, help="exchanges to keep")

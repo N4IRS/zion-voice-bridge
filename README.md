@@ -84,6 +84,7 @@ done
 | `--cloud-model` | enable a cloud lane through any OpenAI-compatible gateway |
 | `--muse` / `--bus-url` / `--bus-token` | enable the async hand-off lane |
 | `--handoff {off,ask,auto}` | `auto` also escalates when the local answer hedges |
+| `--verify {off,numbers,always}` | cloud-check a local answer that contains numbers (the 3B is confidently wrong on arithmetic) |
 | `--attribution {off,handoff,always}` | say who answered ("Muse says: …") |
 | `--ha` / `--no-ha` | Home Assistant tools on/off |
 | `--silence-ms` | quiet time that ends the utterance (600 ms cuts a question at its first pause) |

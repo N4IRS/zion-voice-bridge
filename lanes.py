@@ -170,7 +170,8 @@ class HttpLane(Lane):
                   tools: list[dict] | None = None) -> Reply:
         return await self.chat(self._messages(text, history), tools=tools)
 
-    async def chat(self, messages: list[dict], tools: list[dict] | None = None) -> Reply:
+    async def chat(self, messages: list[dict], tools: list[dict] | None = None,
+                   max_tokens: int | None = None) -> Reply:
         """One model step over an explicit message list (for tool loops)."""
         session = await self._get_session()
         headers = {"Content-Type": "application/json"}
@@ -179,7 +180,7 @@ class HttpLane(Lane):
         payload = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
             "temperature": self.temperature,
             "stream": False,
         }
@@ -382,6 +383,11 @@ class Lanes:
 
     def __getitem__(self, name: str) -> Lane:
         return self.lanes[name]
+
+    def __contains__(self, name: str) -> bool:
+        # without this, `"cloud" in lanes` iterates Lane objects and is always
+        # False -- which silently disabled answer verification.
+        return name in self.lanes
 
     def __iter__(self):
         return iter(self.lanes.values())
