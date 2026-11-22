@@ -111,6 +111,21 @@ journalctl --user -u voice-bridge -f
 controller retries rather than hot-looping, and `PYTHONUNBUFFERED=1` is set because a
 block-buffered log looks frozen and has already been mistaken for "it decoded nothing".
 
+## The contract is served by the bridge
+
+The hand-off envelope is versioned, and the **running service is the authority** —
+not the copy in this repo, which is a mirror and a discovery path:
+
+```bash
+curl http://<bridge>:8700/schema.json    # derived schema: types, fields, error codes, rules
+curl http://<bridge>:8700/envelope.py    # the exact source the service is running
+curl http://<bridge>:8700/healthz
+```
+
+All three send `Cache-Control: no-store`. That is deliberate: a cached schema is how
+an adopting agent ends up speaking a version the bridge no longer accepts, which
+happened once here when the conversation-memory fields landed.
+
 ## Configuration and secrets
 
 Nothing sensitive is in this repo. Both tokens are read from files outside it:

@@ -95,8 +95,49 @@ def log(msg: str) -> None:
 # ── media serving ────────────────────────────────────────────────────────────
 
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves reply media, plus the contract this service actually speaks.
+
+    The schema routes exist because a cached copy of the source went stale the
+    night the memory fields landed: an agent fetched the old page and got a schema
+    the bridge no longer spoke. Whatever is served here comes from the running
+    process, so it cannot disagree with the wire.
+    """
+
+    server_version = "voice-bridge"
+
     def log_message(self, fmt, *args):  # noqa: A002 - stdlib signature
         LOG.debug("http: " + fmt, *args)
+
+    def _send(self, body: bytes, ctype: str, *, last_modified: float | None = None) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        # no-store is the point: a cached schema is the failure this route prevents
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        if last_modified:
+            self.send_header("Last-Modified", self.date_time_string(last_modified))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):  # noqa: N802 - stdlib naming
+        path = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if path == "/envelope.py":
+            source = env_schema.__file__
+            with open(source, "rb") as fh:
+                self._send(fh.read(), "text/x-python; charset=utf-8",
+                           last_modified=os.path.getmtime(source))
+            return
+        if path == "/schema.json":
+            body = json.dumps(env_schema.schema_summary(), indent=1).encode()
+            self._send(body, "application/json; charset=utf-8",
+                       last_modified=os.path.getmtime(env_schema.__file__))
+            return
+        if path == "/healthz":
+            self._send(json.dumps({"ok": True, "schema_version": env_schema.VERSION,
+                                   "types": [env_schema.HANDOFF, env_schema.ANSWER]}).encode(),
+                       "application/json; charset=utf-8")
+            return
+        return super().do_GET()
 
 
 def serve_dir(directory: str, port: int) -> http.server.ThreadingHTTPServer:

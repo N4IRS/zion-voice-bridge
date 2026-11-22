@@ -217,6 +217,39 @@ def answer_error(env: dict) -> tuple[str, str] | None:
     return (err.get("code") or "unknown", err.get("message") or "")
 
 
+def schema_summary() -> dict:
+    """Machine-readable summary, derived from this module rather than written twice.
+
+    Served by the bridge at /schema.json so an agent can discover the contract it
+    must speak without fetching source or trusting a cached copy.
+    """
+    return {
+        "v": VERSION,
+        "types": {"handoff": HANDOFF, "answer": ANSWER},
+        "error_codes": list(ERROR_CODES),
+        "handoff": {
+            "required": ["v", "type", "id", "created_at", "ttl_s", "from", "to",
+                         "device.name", "reply_to.agent", "request.question"],
+            "optional": ["reply_to.bus_id", "conversation", "request.context",
+                         "request.max_words", "request.hint"],
+            "request_context": "list of {role, text}, oldest first, max 6 entries",
+        },
+        "answer": {
+            "required": ["v", "type", "id", "created_at", "from", "to",
+                         "correlation", "status"],
+            "required_when_ok": ["answer.text (non-empty)"],
+            "required_when_error": ["error.code"],
+            "optional": ["in_reply_to", "answer.words", "error.message"],
+            "correlation": "the request envelope's id (UUID), not the bus row id",
+        },
+        "rules": [
+            "status=ok requires non-empty answer.text; an empty body is never valid",
+            "the answer echoes correlation (and/or in_reply_to), or it cannot be matched",
+            "ttl_s belongs to the request; a worker skips work past its TTL",
+        ],
+    }
+
+
 # ── selftest ─────────────────────────────────────────────────────────────────
 
 def _selftest() -> int:
@@ -266,6 +299,10 @@ def _selftest() -> int:
     check("wrong version is rejected",
           any("version" in p for p in validate(dict(ans, v=99))))
     check("error codes are documented", len(ERROR_CODES) >= 3, ", ".join(ERROR_CODES))
+    summary = schema_summary()
+    check("schema summary is derivable", summary["v"] == VERSION
+          and summary["types"]["handoff"] == HANDOFF
+          and len(summary["error_codes"]) == len(ERROR_CODES))
     check("unknown type is rejected",
           any("unknown type" in p for p in validate(dict(ans, type="voice.other"))))
 
