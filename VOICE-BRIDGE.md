@@ -1695,6 +1695,42 @@ What is genuinely left, roughly in order of value:
 
 ---
 
+## 15.1 Filed, not decided: run Music Assistant outside Home Assistant
+
+**Idea (owner, 2026-11-22):** Music Assistant is currently an HA add-on; the bridge
+already talks to its WebSocket API rather than to HA, so MA could run on this
+machine's Docker stack instead, with HA left to be HA.
+
+**Feasible: yes, trivially.** `ghcr.io/music-assistant/server:stable` is multi-arch
+(amd64/arm64) — the same image the add-on wraps — and the bridge's coupling is one
+flag, `--ma-url ws://<host>:8095/ws`. This host has 16 cores, 47 GB RAM free, 7.4 TB
+disk, and nothing listening on 8095.
+
+**The fact that actually decides it:** the voice assistant's *music* path depends on
+the HA box's uptime. HA core restarts do not restart add-ons, but an HA OS reboot or
+OS update takes MA with it — so "the Dots don't depend on HA" is true for questions
+and false for music today.
+
+| case for moving | case against |
+|---|---|
+| decouples the assistant from HA maintenance windows | you own updates, backups and the data dir |
+| MA updates on your schedule, not the add-on store's | HA's snapshots currently cover it for free |
+| better hardware (this box vs the HA OS box) | provider re-auth risk if data-dir migration goes wrong |
+| MA is infrastructure used by non-HA consumers (this bridge, Sendspin players) | one more service to keep alive; "let HA be HA" is real |
+
+**If it is done later**, the order that keeps it reversible: confirm the installed MA
+version offers a backup export (preferred over copying files), stand it up on a
+parallel port (`8096:8095`) beside the add-on, verify providers and players import,
+then stop the add-on, swap to 8095, repoint HA's integration, the bridge's
+`--ma-url` and any Sendspin pairing.
+
+**Recommendation, for what it is worth:** leave it on HA unless the HA box is short
+of capacity or its maintenance windows have actually interrupted music. The one
+asymmetry that would change the answer is if the assistant's music path needs to stay
+up through HA work — that is the only cost worth paying for.
+
+---
+
 ## 16. References
 
 **Read while building (authoritative):**

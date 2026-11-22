@@ -146,6 +146,13 @@ All three send `Cache-Control: no-store`. That is deliberate: a cached schema is
 an adopting agent ends up speaking a version the bridge no longer accepts, which
 happened once here when the conversation-memory fields landed.
 
+## Known coupling
+
+Music Assistant currently runs as a Home Assistant add-on. The bridge talks to its
+WebSocket API directly (`--ma-url`), so HA is not in the media path — but the service
+still lives on the HA box, so an HA OS reboot takes music with it. `VOICE-BRIDGE.md`
+§15.1 records the option to move it and why it was filed rather than done.
+
 ## Configuration and secrets
 
 Nothing sensitive is in this repo. Both tokens are read from files outside it:
