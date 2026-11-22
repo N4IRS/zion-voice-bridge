@@ -554,7 +554,7 @@ Everything in mode 1, plus a second lane:
 | | Lane L (local) | Lane C (cloud) |
 |---|---|---|
 | endpoint | `127.0.0.1:11434/v1` (Ollama, OpenAI-compatible) | `127.0.0.1:20129/v1` (OmniRoute) |
-| model | `qwen2.5:3b` | a **concrete** id, e.g. `cf/@cf/meta/llama-3.3-70b-instruct-fp8-fast` (see below) |
+| model | `qwen2.5:3b` | **`voice-escalation`** — an OmniRoute priority combo (see below) |
 | temperature | 0.0 | 0.0 — factual answers should not sample (§7.3.1) |
 | latency | 1.6–4.3 s | ~1–3 s to first token, then usually fast |
 | cost / privacy | zero, on-box | per token, transcript leaves |
@@ -564,6 +564,38 @@ Everything in mode 1, plus a second lane:
 Both speak `/v1/chat/completions`, so a single HTTP client with a different
 `base_url` and `model` serves both. Provider keys live in OmniRoute, not in the
 bridge.
+
+**The cloud lane is a combo, not a model id.** `voice-escalation` is an OmniRoute
+priority chain, so provider failover is OmniRoute's job instead of ours:
+
+| priority | model | measured |
+|---|---|---|
+| 1 | `cf/@cf/meta/llama-3.3-70b-instruct-fp8-fast` | 0.45 s |
+| 2 | `gemini/gemini-2.5-flash` | 1.34 s |
+
+That order came from probing the catalogue: `zro/…` and `mistral/…` returned *404 no
+active credentials*, `openai/…gpt-5.4-nano` *502 empty response*, `groq/…` *403* — the
+catalogue is full of entries that do not answer, which is exactly what a combo exists
+to survive. **Never route through an `auto/*` alias**: `auto/claude-sonnet` answered an
+antenna question with a *coder* model, because those aliases route by availability, not
+by intent.
+
+**Creating a combo is an API call, not a UI visit.** The management API lives on the
+*dashboard* port (`:20128`, not the OpenAI shim on `:20129`) and authenticates with the
+vault key `omniroute_api_key` as `Authorization: Bearer`:
+
+```bash
+KEY=$(vault get omniroute_api_key)
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:20128/api/combos            # list
+curl -s -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+     --data @combo.json http://127.0.0.1:20128/api/combos                            # 201 Created
+```
+
+`POST /v1/combos` on the API port returns **405** — the OpenAI shim lists combos but
+does not manage them. The body schema is `{name, description, strategy, models:[{id,
+kind:"model", model, providerId, weight}], config:{targetTimeoutMs}}`; `providerId` is
+the catalogue prefix (`cf`, `gemini`), discoverable from `/api/models` and
+`/api/providers`.
 
 **Measured through OmniRoute, 2026-11-21** (40-token reply, one question):
 
