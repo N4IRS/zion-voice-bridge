@@ -193,6 +193,7 @@ av              19.0.2    (only used by faster-whisper's file decoding, which we
 |---|---|
 | `bridge.py` | **the working backend.** Seat claim, VAD, STT, LLM, TTS, media server |
 | `probe.py` | frozen minimal transport test used to prove the seam (no AI) |
+| `stream_probe.py` | the test that showed the controller buffers a growing WAV instead of playing it |
 | `clock.py` | the host clock as a tool: spoken time and date, 22 selftest checks |
 | `ma.py` | Music Assistant over its WebSocket API: play/transport/volume, `--selftest` |
 | `escalation_test.py` | routing policy: data→Muse vs reasoning→cloud, and hedge kinds |
@@ -1558,11 +1559,13 @@ Assistant tools (§8.6).
 
 What genuinely remains:
 
-- **No streaming TTS.** Every reply is synthesised whole, then served. That is why
-  Kokoro's 2 s of synthesis is a real cost rather than a free upgrade, and why a
-  long answer still has a silent gap before it starts. The controller can play an
-  ongoing fetch incrementally (`RUN_START` URL + `INTENT_PROGRESS{tts_start_streaming}`,
-  gated by the device's `streamReply`), so the machinery exists on its side.
+- **Streaming TTS is sentence-level, not true streaming** (§8.7.3). The controller
+  buffers its fetch, so the only shape is one announcement per sentence: sentence 1
+  goes out as the turn reply immediately and the rest follow as announcements. That
+  saved 5.15 s on a two-sentence answer and costs nothing on a one-sentence one, but
+  a long answer still has a 0.23 s seam between sentences, and the controller's turn
+  metrics only count sentence 1. Genuine mid-sentence streaming needs the controller
+  to play a growing body, which it demonstrably does not.
 - **One Dot.** Satellite-2 has been offline since 2026-11-06, so "loudest wins"
   arbitration and the two-device split have never been exercised.
 - **The device's data plane is fragile under long announcements.** One 40 s clip
