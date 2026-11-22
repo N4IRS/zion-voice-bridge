@@ -45,6 +45,7 @@ hand-off takes 30–60 s and is spoken **later, out of band**, with no wake word
 | `probe.py` | frozen minimal transport probe (no AI) used to prove the seam |
 | `tools_test.py` | tool-calling reliability check (15 trials, 3 tools, 1 negative control) |
 | `verify_test.py` | numeric-verification policy as a decision table (when *not* to check) |
+| `escalation_test.py` | routing policy: data→Muse vs reasoning→cloud, and hedge kinds |
 | `memory_test.py` | conversation memory: both turn shapes, the cap, `memory=off` |
 | `deploy/voice-bridge.service` | systemd user unit (unbuffered logs, restart backoff) |
 | `VOICE-BRIDGE.md` | the full design and build record, with measurements and traps |

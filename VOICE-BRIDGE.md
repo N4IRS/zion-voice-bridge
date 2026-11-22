@@ -1097,6 +1097,23 @@ do arithmetic. Before this split, *"what ERP do I get from 100 W into 6 dBd"* wa
 **35 seconds** for an agent that had nothing to add, when the cloud lane answers it in
 one.
 
+**Trimming the tool schema has a floor.** The handoff description was cut to *"Ask
+Muse (data) or the cloud model (reasoning)"* to save ~55 prompt tokens (6–7 s → 4.9 s
+of decision time). It cost the behaviour: the 3B stopped calling the tool at all and
+answered *"I need your own records to answer that"* instead — a dead end. The
+description is now ~12 words longer, and the deferral phrases it produces
+("*need your…*", "*your records*", "*can't see your calendar*") are matched as
+**agent** hedges, so a model that explains the deferral instead of calling the tool
+still reaches Muse. Current state: 291–304 prompt tokens, 3.4–5.9 s of decision,
+both routes correct.
+
+**An empty reply must not fail a turn.** Measured: given a tool schema, `qwen2.5:3b`
+sometimes emits a tool call that Ollama discards — HTTP 200, empty content, and
+`eval_count` of 33 proving it generated something. The bridge now retries once
+**without tools** (which yields a plain answer, often a hedge that then escalates
+correctly) and, if that is also empty, speaks *"Sorry, I couldn't work that one out
+just now"* instead of failing the turn.
+
 **How the decision is made.** The `handoff` tool gained a `needs` field
 (`data` | `reasoning`), and the bridge overrides a `data` label when the question is
 plainly computation — a quantity unit (dB, SWR, ERP, watts, impedance, wavelength,

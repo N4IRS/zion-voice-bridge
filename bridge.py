@@ -88,7 +88,8 @@ SYSTEM_PROMPT = (
     "Answer in at most two spoken sentences. Do arithmetic silently and state the "
     "result with the number. Be precise; do not guess. No lists or markdown. "
     "If a question needs live data or knowledge you lack, call handoff — do not "
-    "reply that you need Muse. Do not mention the current time unless asked."
+    "reply that you need Muse. handoff needs='data' means the user's own records "
+    "(only Muse has them); needs='reasoning' means calculation or world facts. Do not mention the current time unless asked."
 )
 
 
@@ -252,21 +253,20 @@ class SileroVad:
 # Offered to the local lane when `--handoff` is on. The model calls this when a
 # turn needs live facts or knowledge it does not have; the restated question is
 # what goes over the bus (it improves the answer and limits what leaves).
+# Deliberately terse. Every word here is paid on EVERY turn that offers the tool
+# (~40 tokens/s of prompt evaluation on this box), and the model only needs enough
+# to choose: the meanings live in the system prompt, which is cached.
 HANDOFF_TOOL = [{
     "type": "function",
     "function": {
         "name": "handoff",
-        "description": "Escalate a question you cannot answer. Use needs='data' for "
-                       "the user's own records, notes, tasks or accounts (only Muse "
-                       "has those), and needs='reasoning' for calculations, current "
-                       "facts or knowledge you lack.",
+        "description": "Ask Muse for the user's own records; ask the cloud model "
+                       "for calculations or knowledge.",
         "parameters": {
             "type": "object",
             "properties": {
-                "question": {"type": "string", "description": "the question, restated"},
-                "needs": {"type": "string", "enum": ["data", "reasoning"],
-                          "description": "data = the user's own records (Muse); "
-                                         "reasoning = calculations or world knowledge"},
+                "question": {"type": "string"},
+                "needs": {"type": "string", "enum": ["data", "reasoning"]},
             },
             "required": ["question", "needs"],
         },
@@ -291,6 +291,12 @@ HEDGE_MARKERS = (
     "need muse", "needs muse", "ask muse", "get muse", "requires muse",
     "let muse", "muse would", "hand this to muse", "hand it to muse",
     "i need help", "needs help from",
+    # deferrals to data the model cannot see. Measured: with a terser tool schema
+    # the model stopped calling handoff and said "I need your own records to answer
+    # that" — a dead end unless it is treated as the deferral it is.
+    "need your", "needs your", "your own records", "don't have your",
+    "do not have your", "can't see your", "cannot see your", "your records",
+    "your notes", "your list", "your calendar", "your account",
 )
 
 # Spoken phrases that mean "don't try, hand it over" without asking the model
@@ -670,7 +676,13 @@ class Bridge:
 
     #: deferrals that mean "only Muse has this" rather than "I cannot work it out"
     AGENT_HEDGE = ("need muse", "needs muse", "ask muse", "requires muse",
-                   "muse would", "hand this to muse", "hand it to muse")
+                   "muse would", "hand this to muse", "hand it to muse",
+                   # deferrals to records only the agent has — no point asking a
+                   # cloud model first, it cannot see them either
+                   "your own records", "your records", "your notes", "your list",
+                   "your calendar", "your account", "need your", "needs your",
+                   "don't have your", "do not have your", "can't see your",
+                   "cannot see your")
 
     @staticmethod
     def _effective_needs(model_needs: str, question: str) -> str:
@@ -1186,7 +1198,22 @@ class Bridge:
             {"role": "user", "content": f"{text}\n\n[current local time: {context}]"})
         reply = None
         for step in range(3):
-            reply = await lane.chat(messages, tools=tools or None)
+            try:
+                reply = await lane.chat(messages, tools=tools or None)
+            except LaneError as exc:
+                # Measured: given a tool schema, qwen2.5:3b sometimes emits a tool
+                # call that Ollama discards, returning HTTP 200 with empty content
+                # and `eval_count` > 0. Retrying without tools gets a plain answer
+                # (often a hedge, which then escalates properly) instead of failing
+                # the turn.
+                log(f"[turn {turn}] model returned nothing usable ({exc}); "
+                    f"retrying without tools")
+                try:
+                    reply = await lane.chat(messages, tools=None)
+                except LaneError as exc2:
+                    log(f"[turn {turn}] still nothing ({exc2}); answering briefly")
+                    return ("Sorry, I couldn't work that one out just now.",
+                            None, f"model error: {exc2}")
             log(f"[turn {turn}] LLM step{step + 1} {reply.latency_s:.2f} s {reply.stats} "
                 f"tools={[c.get('function', {}).get('name') for c in reply.tool_calls]} "
                 f"text={reply.text[:60]!r}")
