@@ -721,8 +721,14 @@ class Bridge:
                             continue
                         if env.get("type") != env_schema.ANSWER:
                             continue
-                        if env_schema.is_expired(env):
-                            log(f"handoff {corr}: answer arrived past its TTL, dropped")
+                        # TTL belongs to the REQUEST. An answer carries no ttl_s,
+                        # and asking it whether it has expired always says yes
+                        # (fail-safe), which silently dropped every reply until the
+                        # live envelope test caught it. Age the pending entry instead.
+                        age = time.time() - float(entry.get("submitted", time.time()))
+                        if age > self.args.handoff_ttl_s:
+                            log(f"handoff {corr}: answer arrived after {age:.0f}s, "
+                                f"past the {self.args.handoff_ttl_s}s TTL, dropped")
                             self.pending.pop(corr, None)
                             self._save_pending()
                             continue

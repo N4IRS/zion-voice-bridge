@@ -810,6 +810,11 @@ ok-answer refused" and "stale hand-off expired".
   several replies to the same agent is silently deduped. `in_reply_to` (the
   request's bus id) is the collision-free link.
 
+**TTL belongs to the request, never the answer.** An answer envelope has no `ttl_s`,
+so asking *it* whether it has expired always answers yes (fail-safe) — which silently
+dropped every reply until the live envelope test caught it. The asker ages its own
+pending entry instead.
+
 **Error codes.** Recommended: `no_data`, `unavailable`, `bad_question`, `timeout`,
 `internal`. Validation requires a *non-empty* code but does not restrict it to this
 set — an agent must not be rejected by an older bridge for inventing a code, so the
@@ -1104,6 +1109,7 @@ Each of these cost a cycle, and each looks like something else.
 | An answered hand-off is never spoken | inbox parse (`{"messages": []}` fell through `or data`), 30 s await on 35 s audio, retries stacking ducking | fixed in three places; see the limits table above (§8.3) |
 | Replies arrive but nothing is announced | the responder did not echo `correlation_id`/`in_reply_to`, so no id matched | match on subject + time as a fallback; ask responders to echo ids (§8.3) |
 | A remark switches a device on | a statement was executed as a command | gate writes on imperative phrasing (`looks_imperative`, §8.5) |
+| Every envelope answer is dropped as "past its TTL" | `is_expired()` was applied to the *answer*, which carries no `ttl_s` and so fails safe as expired | age the pending entry against the request's TTL instead (§8.3.1) |
 | New instance dies with `OSError: [Errno 98] Address already in use` | the old bridge still holds media port 8700 — and a `kill $(ps ... awk ...)` can match *its own shell's command line* (which contains `bridge.py`) and kill the shell instead of the bridge | kill by explicit PID; verify with `ss -ltnp \| grep 8700` before restarting |
 
 ---
