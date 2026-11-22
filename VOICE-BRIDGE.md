@@ -1068,7 +1068,33 @@ Each of these cost a cycle, and each looks like something else.
 
 ---
 
-## 14.1 The agent bus: what a production version needs
+## 14.1 The agent bus: hygiene, not transport
+
+**Conclusion (2026-11-21, after Muse reviewed the options): do not swap the
+transport.** The reasoning is structural and it survives scrutiny:
+
+- **MCP is one-way per connection** (client calls, server answers) and Muse accepts
+  no inbound connections — she runs in a hosted cloud VM. So MCP can never carry
+  traffic *toward* her. It is the fast lane only for the other direction: she calls a
+  tool on the ThinkStation and gets a typed answer in the same call. Worth adding
+  later; parked for now.
+- **The bus is not the slow part.** The dispatcher is event driven and routes on
+  arrival. The measured ~2-minute PONG was OpenCode's own poll cycle and processing,
+  and the slow part on Muse's side was having no consumer at all — which the hook
+  fixed. The 31-second voice hand-off measured here was her hook interval plus her
+  answering time.
+- **A relay, WebSocket or MQTT subscription would only shave the poll** — a few
+  seconds — while her answer time (tens of seconds) stays. It would cost a daemon on
+  her side for almost nothing.
+- **No protocol makes both directions fast**, because the limit is that one direction
+  requires *her* to wake up and answer.
+
+So the bus stays the durable backbone: messages survive restarts, long jobs belong
+there, and it is the only thing that can carry traffic toward her. The table below is
+therefore a list of **hygiene**, not performance work — every row is cheap, and every
+row is a bug this project actually hit.
+
+## 14.1.1 The agent bus: what a production version needs
 
 The bus is the weakest component in the chain, and this project leaned on it hard
 enough to expose why. Observed failures during one evening, each with a symptom a
@@ -1085,9 +1111,18 @@ user would notice:
 | **no latency or priority class** | a voice hand-off (needs ~60 s) and a background task share one queue | priority/queue classes, or at least a deadline field |
 | **no read audit** | nothing records who read what and when, so "did Muse see it?" was answered by querying the DB | delivery receipts |
 
-None of that is a criticism of the concept — store-and-forward between agents is
-the right idea. It is a criticism of the current implementation being asked to
-carry a real-time path.
+None of that is a criticism of store-and-forward — it is the right shape for this
+direction of traffic, and it is the only shape the topology allows. It is a list of
+envelope-level guarantees that a durable channel needs before anything depends on it
+being *correct*, as opposed to fast.
+
+The cheapest three, and the ones that bit this project directly:
+
+| fix | the bug it prevents |
+|---|---|
+| responders echo `in_reply_to` (or the request's correlation id) | a correct answer silently unmatched for minutes (tonight) |
+| a TTL / expiry per message | a six-deep backlog of stale results inherited by a late consumer |
+| a distinct error status instead of a body like `(empty reply)` | a placeholder spoken aloud as if it were the answer (tonight) |
 
 ## 14. Roadmap
 
