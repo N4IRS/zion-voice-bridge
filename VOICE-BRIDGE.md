@@ -1429,6 +1429,33 @@ and both were measurably worse for being routed through a model:
 | clock / date | 5.4–6.4 s, two passes; produced tool-syntax prose ("handoff needs data") and a five-call loop | **0.000 s**, from the OS |
 | workshop formulas | wrong 5 times in 6; cloud verification only reached 5/6 | **0.000 s**, computed |
 
+The `0.000 s` is the compute. What a person actually feels is end-of-speech to audio
+handed over, and that is measured on the Dot, same question, before and after:
+
+| "What time is it?" | 2026-11-21 23:25 | 2026-11-22 07:35 |
+|---|---|---|
+| STT | 654 ms | 684 ms |
+| model, step 1 | **11.21 s** (it called `host_clock`) | — |
+| model, step 2 | 2.54 s | — |
+| Piper | ~90 ms | 108 ms |
+| **end of speech → audio handed to the Dot** | **14.50 s** | **0.795 s** |
+
+18× on the wall clock, and the fast path is also the *more* correct answer. In the old
+run the tool returned `"It's eleven twenty-five at night."` and the model then said
+**"It's 23:25."** — handing back the military digits the prompt forbids. The 07:35 turn
+said *"It's seven thirty-five in the morning."*
+
+The date question is the worse case in the same log: at 06:00 *"What day of the week is
+it?"* produced the literal text `handoff needs='data'`, escalated to Muse, and the reply
+arrived **37 s later** ("Today is Sunday, November 22, 2026."). That question now costs
+0.7 s and never leaves the house.
+
+**What is left of the 795 ms is Whisper** — 684 ms of it, 86 %, against 108 ms of Piper.
+That is the next lever if a turn ever needs to feel faster, and it is a model choice
+(`base.en` here), not a plumbing problem. The 1.7 s between the wake word and "speech
+start" is the VAD listening while the person is still talking, so it is not latency
+anyone waits through.
+
 `calc.py` covers the formulas this bench actually gets asked, each with a known-value
 test so "correct" is defined before anything moves:
 
