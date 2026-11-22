@@ -1,0 +1,17 @@
+# environment and models (large, and not ours to redistribute)
+.venv/
+voices/
+models/
+
+# runtime output — may contain voice audio and transcripts
+captures/
+*.log
+pending-handoffs.json
+
+# tokens must never live in the repo
+*.token
+ha-token
+tokens/
+
+__pycache__/
+*.pyc
