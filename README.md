@@ -51,6 +51,8 @@ hand-off takes 30–60 s and is spoken **later, out of band**, with no wake word
 | `stream_test.py` | streaming TTS: sentence 1 returned early, and cancellation on barge-in |
 | `loop_test.py` | CPU work must not block the event loop (whisper/piper run in a thread) |
 | `fastpath_test.py` | which questions are answered in code, and which must reach the model |
+| `guard_test.py` | a write cannot fire on a remark: the gate and the dispatcher both refuse |
+| `toolset_bench.py` | the measurement behind the tool gates: selection accuracy and flip cost |
 | `memory_test.py` | conversation memory: both turn shapes, the cap, `memory=off` |
 | `deploy/voice-bridge.service` | systemd user unit (unbuffered logs, restart backoff) |
 | `VOICE-BRIDGE.md` | the full design and build record, with measurements and traps |

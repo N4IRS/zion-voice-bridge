@@ -1454,6 +1454,77 @@ days of leave do I have"*, which is not a date delta).
 **Flags:** `--fastpath {on,off}` (default on) and `--clock-tool` (default off). Both
 paths log `answered from the fast path (...)`, so a turn's route is always visible.
 
+### 8.14 Do the tool gates earn their keep? Measured: yes, and not for the reason assumed
+
+The gates (`wants_ha_tools`, `looks_imperative`, `wants_music_tools`) existed on a
+theory: offering every tool on every turn costs prompt tokens, and prompt tokens cost
+time on this CPU. Prefix caching was supposed to undercut that — the schema is paid
+once and then free — while a *changing* tool set was supposed to invalidate the prefix
+and pay 2.5-3 s on every flip. If that were true the gates would be pure cost, and the
+plan was to delete them.
+
+`toolset_bench.py` measures both halves: 14 utterances × 2 runs × both modes for
+selection accuracy, and a separate 4-way experiment for the flip cost.
+
+| | gated (shipped) | fixed (every tool always) |
+|---|---|---|
+| correct tool, or correctly none | **24/28 (86%)** | 20/28 (71%) |
+| **writes on a question or a remark** | **0/28** | **4/28** |
+| tool syntax spoken as prose | 0/28 | 0/28 |
+
+The failures are not symmetric, and that is the point. In fixed mode the model chose
+`ha_do` — the write tool — for *"Is the patio light on?"* and for *"This is the first
+office fan on."*, twice each. `ha.do()` has no check of its own, so in the real bridge
+those would have actuated. In gated mode the worst case for the same remark was an
+unneeded `ha_lookup`: a read, which cannot change anything.
+
+The second finding is dilution. With handoff offered *alone* the model escalated
+*"What's on my list for tomorrow?"* 2/2. With six tools on the table it answered from
+its own empty knowledge 2/2 — the "answered unverified" failure the whole handoff
+design exists to prevent. Fewer, more specific tools made the model more likely to use
+the right one.
+
+**And the flip cost was mostly an artefact of the first experiment.** Attempt one primed
+with one tool set and then measured the same set twice, so its "alternating" group was
+really a warm repeat; it reported no flip penalty, then a 6.9 s one, depending on order.
+The corrected version primes each measured call with a known prefix:
+
+| measured call (432 vs 642 prompt tokens) | prompt eval | total |
+|---|---|---|
+| small set, repeated (prefix warm) | **0.072 s** | 2.17 s |
+| small set, after a flip (prefix evicted) | **1.804 s** | 4.04 s |
+| all tools, repeated | **0.069 s** | 2.18 s |
+| all tools, after a flip | **6.802 s** | 8.93 s |
+
+So the hypothesis was right that a flip is expensive — it is **+1.7 s** for the small set
+and **+6.8 s** for the full one — and wrong that the gates cause it. Gating changes the
+tool set *less* often than a single fixed set ever could, and the rebuild cost scales
+with how much prompt was evicted, which is exactly why the full set is the expensive one
+to rebuild. Warm, both sizes cost 70 ms: **the schema itself is free when it stays put.**
+
+Verdict: the gates stay. They buy 15 points of selection accuracy and are the only thing
+standing between a remark and a switched-on fan, and their measured latency cost is
+bounded by how rarely the set changes.
+
+### The guard the benchmark justified
+
+Because 4-in-28 turns showed the model reaching for a write on a non-instruction,
+`_run_ha_tool` now refuses `ha_do` unless `looks_imperative(question)` — a second
+layer behind the gate, since `ha.do()` has no check of its own. It should be
+unreachable; it is cheap, and the difference between a wrong answer and a device
+changing state is worth an `if`. `guard_test.py` pins both layers plus the two
+negative controls that matter: a real instruction still writes, and a read on a
+question still works.
+
+### One thing the benchmark did not fix
+
+*"Where did we leave the duplexer order?"* missed handoff **in both modes**, including
+when handoff was the only tool offered. The model answers from its own knowledge rather
+than escalating, on phrasings that do not look like a question about records. That is a
+prompt or routing problem, not a gating problem, and it is recorded rather than patched
+— inventing a third regex to catch it would be the same class of guess the fast paths
+were built to remove.
+
 ## 9. Observability and failure behaviour
 
 **Bridge log, per turn** (`journalctl --user -u voice-bridge`): wake conversation id, speech start/end
@@ -1636,6 +1707,8 @@ Each of these cost a cycle, and each looks like something else.
 | A remark switches a device on | a statement was executed as a command | gate writes on imperative phrasing (`looks_imperative`, §8.5) |
 | The hand-off asked the wrong question: "ask **news** what its icon is" | whisper decoded the agent's name as a common word | put proper nouns in the ASR prompt (`ASR_PROMPT`), same fix as "in petals" → "impedance" (§7.2) |
 | The Dot answered in 5-6 s with a number the model guessed | a fact the OS or arithmetic already knows was routed through two model passes | clock and the workshop formulas are answered in code, 0.000 s (§8.13) |
+| The Dot switched the fan on after a remark | the write tool was offered on every turn, so the model could pick it; `ha.do()` has no check | `ha_do` is only offered on an instruction, and the dispatcher refuses it otherwise (§8.14, `guard_test.py`) |
+| A benchmark "proved" a cost that was an ordering artefact | the flip test primed with one set and measured the same one, so its "alternating" group was a warm repeat | prime each measured call with a *different* prefix, and measure both sizes — the penalty was real, its cause was not (§8.14) |
 | The Dot said "handoff needs data" | the model wrote tool-call syntax as text, and the phrasing "day of the week" matched no date pattern so no tool was offered | pattern extended; tool syntax in an answer is detected and never spoken (§8.8) |
 | First follow-up that also needed a hand-off failed with `KeyError('text')` | chat history is `{"role","content"}`, the envelope wants `{"role","text"}` — two shapes, one confusion | `_handoff_context()` maps between them; `memory_test.py` asserts both shapes (memory_test.py was written after the bug, not before) |
 | Every envelope answer is dropped as "past its TTL" | `is_expired()` was applied to the *answer*, which carries no `ttl_s` and so fails safe as expired | age the pending entry against the request's TTL instead (§8.3.1) |

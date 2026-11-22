@@ -1432,7 +1432,7 @@ class Bridge:
                 elif name.startswith("music_"):
                     result = await self._run_music_tool(turn, name, args)
                 else:
-                    result = self._run_ha_tool(turn, name, args)
+                    result = self._run_ha_tool(turn, name, args, question)
                 tool_numbers |= _numbers(str(result) + " " + str(locals().get("tool_digits", "")))
                 tool_digits = ""
                 messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
@@ -1571,9 +1571,18 @@ class Bridge:
         reply = await lane.chat(messages)
         return reply.text, None, "stream-fallback"
 
-    def _run_ha_tool(self, turn: int, name: str, args: dict) -> dict:
+    def _run_ha_tool(self, turn: int, name: str, args: dict, question: str = "") -> dict:
         if self.ha is None:
             return {"ok": False, "error": "Home Assistant is not configured"}
+        if name == "ha_do" and not looks_imperative(question):
+            # Defence in depth. The write tool is only *offered* when the utterance
+            # is an instruction, so this should be unreachable - but the gate is a
+            # model-behaviour assumption, and ha.do() has no check of its own.
+            # Measured with every tool offered on every turn (toolset_bench.py),
+            # qwen2.5:3b chose ha_do for a question and for a remark in 4 of 28
+            # turns; those would have actuated.
+            log(f"[turn {turn}] refused ha_do: {question[:60]!r} is not an instruction")
+            return {"ok": False, "error": "refused: the utterance is not an instruction"}
         try:
             if name == "ha_lookup":
                 hits = self.ha.lookup(str(args.get("query", "")), limit=3)
