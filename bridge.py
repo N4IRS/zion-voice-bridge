@@ -790,8 +790,14 @@ class Bridge:
         them (opencode does).
         """
         env = env_schema.parse(msg.get("body") or "")
-        if env and env.get("correlation") in self.pending:
-            return env["correlation"]
+        if env:
+            correlation = str(env.get("correlation") or "")
+            if correlation in self.pending:
+                return correlation              # the envelope id: primary path
+            for key, entry in self.pending.items():
+                # tolerant: a responder that put the bus id in `correlation`
+                if entry.get("bus_id") is not None and str(entry["bus_id"]) == correlation:
+                    return key
         corr = str(msg.get("correlation_id") or "")
         if corr in self.pending:
             return corr

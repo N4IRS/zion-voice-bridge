@@ -21,7 +21,7 @@ and the answer:
       "id": "<uuid>",
       "created_at": "...Z",
       "from": "muse", "to": "bridge",
-      "correlation": "<the handoff's id>",     # MUST echo; this is the link
+      "correlation": "<the handoff envelope's id — a UUID, not the bus id>",
       "in_reply_to": 1535,                      # the bus message it answers
       "status": "ok" | "error",
       "answer": {"text": "...", "words": 24},   # required when status=ok
@@ -55,6 +55,11 @@ import uuid
 VERSION = 1
 HANDOFF = "voice.handoff"
 ANSWER = "voice.answer"
+
+#: recommended error codes. Validation requires a non-empty code but does not
+#: constrain it to this set — a new code from an agent must not be rejected by an
+#: older bridge; the bridge logs unknown codes rather than refusing them.
+ERROR_CODES = ("no_data", "unavailable", "bad_question", "timeout", "internal")
 
 
 def _now() -> datetime.datetime:
@@ -244,6 +249,7 @@ def _selftest() -> int:
           any("correlation" in p for p in validate(dict(ans, correlation=""))))
     check("wrong version is rejected",
           any("version" in p for p in validate(dict(ans, v=99))))
+    check("error codes are documented", len(ERROR_CODES) >= 3, ", ".join(ERROR_CODES))
     check("unknown type is rejected",
           any("unknown type" in p for p in validate(dict(ans, type="voice.other"))))
 

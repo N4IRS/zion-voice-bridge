@@ -810,6 +810,24 @@ ok-answer refused" and "stale hand-off expired".
   several replies to the same agent is silently deduped. `in_reply_to` (the
   request's bus id) is the collision-free link.
 
+**Error codes.** Recommended: `no_data`, `unavailable`, `bad_question`, `timeout`,
+`internal`. Validation requires a *non-empty* code but does not restrict it to this
+set — an agent must not be rejected by an older bridge for inventing a code, so the
+bridge logs unknown codes rather than refusing them.
+
+**Which id goes where — the one thing easy to get wrong:**
+
+| field | value | notes |
+|---|---|---|
+| request `id` | a UUID | the hand-off's identity; this is what the answer must echo |
+| request bus `correlation_id` | **the same UUID** | set by the bridge on send |
+| request bus row `id` | an integer (e.g. 1545) | the bus's own numbering |
+| answer `correlation` | the request's **UUID** | primary match |
+| answer `in_reply_to` | the request's **bus id** (1545) | secondary match, collision-free |
+
+The bridge also accepts a reply that puts the *bus id* in `correlation` — liberal in
+what it accepts, strict in what it sends — but the UUID is the correct value.
+
 **Adoption checklist (Muse's four steps):** match the hook on the envelope `type`,
 not the bus type; read `question`/`device`/`correlation`/`ttl_s` out of the
 envelope and skip expired ones; echo `correlation` in the reply; never post an
