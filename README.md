@@ -43,7 +43,20 @@ hand-off takes 30–60 s and is spoken **later, out of band**, with no wake word
 | `ha.py` | Home Assistant as a *tool*: fuzzy lookup, safe writes, imperative gate |
 | `probe.py` | frozen minimal transport probe (no AI) used to prove the seam |
 | `tools_test.py` | tool-calling reliability check (15 trials, 3 tools, 1 negative control) |
+| `verify_test.py` | numeric-verification policy as a decision table (when *not* to check) |
+| `memory_test.py` | conversation memory: both turn shapes, the cap, `memory=off` |
+| `deploy/voice-bridge.service` | systemd user unit (unbuffered logs, restart backoff) |
 | `VOICE-BRIDGE.md` | the full design and build record, with measurements and traps |
+
+Each module self-tests without hardware or network where it can:
+
+```bash
+.venv/bin/python envelope.py        # 20 checks: the message contract
+.venv/bin/python verify_test.py     # 10 cases: when verification must not fire
+.venv/bin/python memory_test.py     # 9 checks: history shape and limits
+.venv/bin/python lanes.py --selftest
+HA_URL=http://<ha>:8123 .venv/bin/python ha.py   # needs a live Home Assistant
+```
 
 ## Requirements
 
