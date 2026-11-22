@@ -721,6 +721,18 @@ class Bridge:
         t0 = time.monotonic()
         turn = self.turn
         try:
+            # Measured on 2026-11-22: the wake word fired, the person said nothing,
+            # and whisper transcribed the silence as "Good time." - which the model
+            # then answered with "The good time is 14:23 UTC." If the endpointing
+            # never saw speech, there is nothing to transcribe.
+            if self.vad.speech_ms < self.args.min_speech_ms:
+                log(f"[turn {turn}] no speech detected "
+                    f"({self.vad.speech_ms:.0f} ms < {self.args.min_speech_ms} ms); "
+                    f"not asking the models")
+                self.send_event(ET.VOICE_ASSISTANT_ERROR, {"code": "stt-no-speech"})
+                self.send_event(ET.VOICE_ASSISTANT_RUN_END)
+                self.finish("no speech")
+                return
             pcm = bytes(self.mic)
             await self._dump(pcm, turn)
 

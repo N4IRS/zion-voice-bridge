@@ -53,6 +53,7 @@ hand-off takes 30–60 s and is spoken **later, out of band**, with no wake word
 | `fastpath_test.py` | which questions are answered in code, and which must reach the model |
 | `guard_test.py` | a write cannot fire on a remark: the gate and the dispatcher both refuse |
 | `stt_test.py` | transcription confidence: why `small.en` is the default, and the gate that did not work |
+| `poc.py` | the whole voice loop in one file — four stages, no tools, no hand-off, no cloud |
 | `toolset_bench.py` | the measurement behind the tool gates: selection accuracy and flip cost |
 | `memory_test.py` | conversation memory: both turn shapes, the cap, `memory=off` |
 | `deploy/voice-bridge.service` | systemd user unit (unbuffered logs, restart backoff) |

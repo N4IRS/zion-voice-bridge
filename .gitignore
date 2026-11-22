@@ -16,3 +16,4 @@ tokens/
 __pycache__/
 *.pyc
 ma-token
+.fixtures/

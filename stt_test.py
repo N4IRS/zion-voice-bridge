@@ -86,43 +86,43 @@ def gate_cases():
 
 
 def live():
-    """The real thing, if the capture is still on disk."""
-    path = "captures/turn002.wav"
-    if not os.path.exists(path):
-        print(f"skip live: {path} not present (captures/ is gitignored)")
+    """The real models, against a reference clip that does not move.
+
+    The clip and its reference text live in .fixtures/, which is gitignored: it is
+    the operator's voice and this repo is public. `captures/` is overwritten every
+    turn, so pinning a regression test to it means the test silently changes what
+    it asserts - which is exactly what happened once already.
+    """
+    ref = ".fixtures/stt-ref.wav"
+    expect = "schedule"
+    if not os.path.exists(ref):
+        print(f"skip live: {ref} not present (operator voice, deliberately not in git)")
         return
     import wave
 
-    with wave.open(path) as w:
-        pcm = w.readframes(w.getnframes())
-
     from faster_whisper import WhisperModel
+
+    with wave.open(ref) as w:
+        pcm = w.readframes(w.getnframes())
     audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
 
-    # base.en is the model this bench ran first, and on this clip it is not merely
-    # wrong but unstable: "S mu is what I must schedule", "Ask news what's on my
-    # schedule", "Ask me what's on my schedule" on successive runs. Recorded here
-    # because it is the entire reason small.en is the default.
     bridge = Bridge(ns())
     bridge.brain.whisper = WhisperModel("base.en", device="cpu", compute_type="int8",
                                         cpu_threads=8, local_files_only=True)
-    saw: list[str] = []
-    for _ in range(3):
-        text, _lp = bridge.brain._transcribe_with(bridge.brain.whisper, audio)
-        saw.append(text)
-    check("base.en is unstable on this clip (why small.en is the default)",
-          len(set(saw)) > 1 or not any("muse" in t.lower() for t in saw),
-          " | ".join(repr(t) for t in set(saw))[:110])
+    base_runs = {bridge.brain._transcribe_with(bridge.brain.whisper, audio)[0]
+                 for _ in range(3)}
+    print(f"     base.en on the reference clip: {sorted(base_runs)}")
 
-    # The shipped configuration: small.en as the primary model.
     small = Bridge(ns(whisper_model="small.en"))
     small.brain.whisper = WhisperModel("small.en", device="cpu", compute_type="int8",
                                        cpu_threads=8, local_files_only=True)
     t = time.monotonic()
-    text, elapsed = small.brain.transcribe(pcm)
-    check("small.en transcribes it correctly",
-          "muse" in text.lower() and "schedule" in text.lower(),
-          f"{text!r} in {elapsed:.2f} s")
+    runs = {small.brain._transcribe_with(small.brain.whisper, audio)[0] for _ in range(3)}
+    elapsed = time.monotonic() - t
+    check("small.en gives the same answer every run", len(runs) == 1,
+          f"{sorted(runs)}")
+    check("and it is the right answer", any(expect in r.lower() for r in runs),
+          f"in {elapsed / 3:.2f} s per run")
 
 
 def main() -> int:

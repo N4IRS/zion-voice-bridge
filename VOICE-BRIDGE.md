@@ -1552,6 +1552,43 @@ prompt or routing problem, not a gating problem, and it is recorded rather than 
 — inventing a third regex to catch it would be the same class of guess the fast paths
 were built to remove.
 
+### 8.16 The POC: `poc.py`, one file, and the one line it was missing
+
+`poc.py` is the same voice loop stripped to four stages — whisper → Ollama → Piper →
+URL — with no tools, no hand-off, no memory, no verification, no streaming, no cloud,
+no vocabulary hints and no wake-word logic (the Dot does that). 280 lines including
+comments, and it works on the Dot: five turns in a row at 3.8–4.8 s after speech ended.
+
+What it keeps, because without them nothing works: its own endpointing (the Dot sends
+no VAD-end) and a URL in `TTS_END` with a server that stays up. What it does not keep is
+the safety work — with no hand-off tool, the model will invent rather than say it cannot.
+
+**The line it was missing:** `handle_start` must `return 0`. aioesphomeapi treats that
+return value as the port of a voice-assistant server it starts for the device; returning
+`None` made it log `Server could not be started` and send `error=True` to the Dot on
+every single wake. The device tolerated it and streamed anyway, so it looked like
+cosmetic noise — and the shipped bridge never showed the message because it had always
+returned 0, for no documented reason. That is now written down in both files.
+
+**Two results from the POC run worth keeping:**
+
+1. *A one-file POC still needs the no-speech guard.* A wake with no speech behind it
+   transcribed as `"Good time."` and the model answered `"The good time is 14:23 UTC."`
+   — the same hallucination the bridge produced at 07:59. Both now refuse before
+   transcribing: the POC logs `no speech crossed the gate; not asking the models` and
+   the bridge logs `no speech detected (0 ms < 160 ms)`.
+2. *`small.en` is much better than `base.en`, not perfect.* In the same run it heard
+   `"Is the office fan turned on?"` correctly and then, one turn later, `"Is he off of
+   his fanon?"` for the same question. 3 of 4 utterances were right. The remaining
+   mishearings are a property of this room and microphone placement, not of the model
+   choice that §8.15 settled, and no threshold or hotword list fixes them.
+
+Its regression clip lives in `.fixtures/stt-ref.wav`, gitignored: the repo is public and
+the clip is the operator's voice. Note that the clip saved is an *easy* one (both models
+get it right) because `captures/` had already been overwritten by the time it was kept —
+so `stt_test.py` pins stability on it and the gate logic separately, and the hard clip
+that started all this is gone.
+
 ### 8.15 Hearing: why `small.en`, and why the hybrid gate failed
 
 A local-only test on 2026-11-22 produced this on the Dot:
