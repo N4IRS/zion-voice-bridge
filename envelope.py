@@ -82,7 +82,7 @@ def _parse_stamp(text: str) -> datetime.datetime | None:
 def make_handoff(question: str, *, device: str = "satellite", from_agent: str = "bridge",
                  to: str = "muse", bus_id: int | None = None, ttl_s: int = 900,
                  max_words: int = 30, hint: str = "", conversation: str = "",
-                 context: list[dict] | None = None) -> dict:
+                 context: list[dict] | None = None, needs: str = "data") -> dict:
     """Build a hand-off.
 
     `context` is the recent exchange as the asker saw it — each entry
@@ -103,6 +103,10 @@ def make_handoff(question: str, *, device: str = "satellite", from_agent: str = 
         "reply_to": {"agent": from_agent, "bus_id": bus_id},
         "conversation": conversation or "",
         "request": {"question": question.strip(), "voice": True,
+                    # what the asker believes this needs: "data" = the owner's own
+                    # records (only Muse has those), "reasoning" = calculation or
+                    # world knowledge. Informational for the responder.
+                    "needs": needs,
                     "max_words": int(max_words), "hint": hint,
                     # optional speaking-style hint. Added 2026-11-21 as a drift
                     # probe: an adopting agent whose prompt predates it should
@@ -236,10 +240,13 @@ def schema_summary() -> dict:
             "required": ["v", "type", "id", "created_at", "ttl_s", "from", "to",
                          "device.name", "reply_to.agent", "request.question"],
             "optional": ["reply_to.bus_id", "conversation", "request.context",
-                         "request.max_words", "request.hint", "request.tone"],
+                         "request.max_words", "request.hint", "request.tone",
+                         "request.needs"],
             "field_notes": {
                 "request.tone": "optional speaking-style hint, currently always "
                                 "'plain'; safe to ignore, added 2026-11-21",
+                "request.needs": "'data' (the owner's own records) or 'reasoning' "
+                                 "(calculation/world knowledge); informational",
             },
             "request_context": "list of {role, text}, oldest first, max 6 entries",
         },

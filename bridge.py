@@ -256,14 +256,19 @@ HANDOFF_TOOL = [{
     "type": "function",
     "function": {
         "name": "handoff",
-        "description": "Ask Muse, a cloud agent, when the question needs live data "
-                       "or knowledge you lack.",
+        "description": "Escalate a question you cannot answer. Use needs='data' for "
+                       "the user's own records, notes, tasks or accounts (only Muse "
+                       "has those), and needs='reasoning' for calculations, current "
+                       "facts or knowledge you lack.",
         "parameters": {
             "type": "object",
             "properties": {
                 "question": {"type": "string", "description": "the question, restated"},
+                "needs": {"type": "string", "enum": ["data", "reasoning"],
+                          "description": "data = the user's own records (Muse); "
+                                         "reasoning = calculations or world knowledge"},
             },
-            "required": ["question"],
+            "required": ["question", "needs"],
         },
     },
 }]
@@ -342,6 +347,18 @@ HAS_NUMBER = re.compile(
 SELF_REFERENTIAL = re.compile(
     r"\b(you|your|yours|yourself|zion|muse|workshop|satellite|this machine|"
     r"this box|my station|my setup|here)\b", re.IGNORECASE)
+
+#: questions that ask for computation, whatever the model calls them. A 3B asked
+#: "what ERP do I get from 100 W into 6 dBd?" labelled it needs="data" and sent it to
+#: the agent lane (35 s) when the cloud lane answers it in ~1 s.
+COMPUTE_UNITS = re.compile(
+    r"\b(db|dbm|dbd|dbi|swr|erp|eirp|watt|watts|impedance|wavelength|"
+    r"percent|percentage|gain|loss|length|distance|frequency|"
+    r"hz|khz|mhz|ghz|feet|foot|mile|miles|metre|metres|meter|meters|"
+    r"kilometre|kilometres|kilometer|kilometers)\b", re.IGNORECASE)
+COMPUTE_VERBS = re.compile(
+    r"\b(how many|how much|convert|calculate|compute|how long|how far)\b",
+    re.IGNORECASE)
 
 #: an answer repeating the injected clock is using context the cloud cannot see
 CLOCK_IN_ANSWER = re.compile(r"\b\d{1,2}:\d{2}\s*(am|pm)\b|\b(mon|tues|wednes|thurs|fri|satur|sun)day\b",
@@ -597,11 +614,20 @@ class Bridge:
             elif (self.args.handoff == "auto" and self.brain.lanes.async_
                   and self._looks_like_hedge(reply)):
                 hedge = self._hedge_phrase(reply)
-                log(f"[turn {turn}] local answer hedged ({hedge!r}) -> escalating")
-                reply, handoff_note = await self._handoff(
-                    [], text, turn,
-                    why=f"local answer hedged ({hedge}): {reply[:120]}",
-                )
+                kind = self._hedge_kind(reply)
+                log(f"[turn {turn}] local answer hedged ({hedge!r}) -> "
+                    f"escalating as {kind}")
+                answered = None
+                if kind == "knowledge" and "cloud" in self.brain.lanes:
+                    answered = await self._cloud_answer(text)
+                if answered:
+                    reply, _stats = answered
+                    handoff_note = "escalated (hedge→reasoning)"
+                else:
+                    reply, handoff_note = await self._handoff(
+                        [], text, turn,
+                        why=f"local answer hedged ({hedge}): {reply[:120]}",
+                    )
             if note:
                 log(f"[turn {turn}] answer note: {note}")
             self.send_event(ET.VOICE_ASSISTANT_INTENT_START)
@@ -641,6 +667,42 @@ class Bridge:
             self.in_turn = False
 
     # ── handoff ──────────────────────────────────────────────────────────────
+
+    #: deferrals that mean "only Muse has this" rather than "I cannot work it out"
+    AGENT_HEDGE = ("need muse", "needs muse", "ask muse", "requires muse",
+                   "muse would", "hand this to muse", "hand it to muse")
+
+    @staticmethod
+    def _effective_needs(model_needs: str, question: str) -> str:
+        """The model's label, overridden when the question is plainly a calculation.
+
+        The 3B mislabels arithmetic as "data" often enough to matter; a numeric
+        question sent to the agent lane costs 30-60 s for an answer the cloud lane
+        gives in about one. A mislabel in the other direction is caught by the
+        refusal cascade: if the cloud lane says it has no access, the turn falls
+        back to the agent.
+        """
+        needs = (model_needs or "data").strip().lower()
+        if needs not in ("data", "reasoning"):
+            needs = "data"
+        text = question or ""
+        # a quantity unit in the question is the strongest signal: "what ERP from
+        # 100 W into 6 dBd" is arithmetic no matter what the model called it. A
+        # how-much/how-many with a number is the weaker one ("how long is a
+        # half-wave for 14.2 MHz" vs "how much did I spend on the dipole").
+        if COMPUTE_UNITS.search(text):
+            return "reasoning"
+        if COMPUTE_VERBS.search(text) and re.search(r"\d", text):
+            return "reasoning"
+        return needs
+
+    @staticmethod
+    def _hedge_kind(text: str) -> str | None:
+        """'agent' for a data deferral, 'knowledge' for a reasoning gap, else None."""
+        if not Bridge._looks_like_hedge(text):
+            return None
+        low = (text or "").lower()
+        return "agent" if any(m in low for m in Bridge.AGENT_HEDGE) else "knowledge"
 
     @staticmethod
     def _looks_like_hedge(text: str) -> bool:
@@ -708,6 +770,7 @@ class Bridge:
             hint="answer in one or two spoken sentences",
             conversation=self.conversation,
             context=self._handoff_context(question),
+            needs=str(args.get("needs") or "data"),
         )
         try:
             corr = await lane.submit(question, device=self.args.device_name, envelope=env)
@@ -1043,6 +1106,28 @@ class Bridge:
             log(f"verify skipped: {why}")
         return decision
 
+    async def _cloud_answer(self, question: str) -> tuple[str, dict] | None:
+        """Ask the cloud lane one question cold, with room to work. Returns the
+        extractable ANSWER line (or None if the reply had none)."""
+        if "cloud" not in self.brain.lanes:
+            return None
+        lane = self.brain.lanes["cloud"]
+        try:
+            reply = await lane.chat(
+                [{"role": "system", "content": VERIFY_SYSTEM},
+                 {"role": "user", "content": question}],
+                max_tokens=self.args.verify_max_tokens,
+            )
+        except LaneError as exc:
+            log(f"cloud answer failed ({exc})")
+            return None
+        match = re.search(r"ANSWER:\s*(.+)", reply.text, re.IGNORECASE | re.DOTALL)
+        spoken = match.group(1).strip().splitlines()[0].strip() if match else ""
+        if not spoken:
+            log("cloud answer had no ANSWER: line; unusable")
+            return None
+        return spoken, reply.stats
+
     async def _verify(self, question: str, candidate: str) -> tuple[str, dict] | None:
         """Ask the cloud lane the same question, WITHOUT showing it the local answer.
 
@@ -1136,7 +1221,34 @@ class Bridge:
                 except json.JSONDecodeError:
                     args = {}
                 if name == "handoff":
-                    return "", args or {"question": text}, "handoff requested"
+                    needs = self._effective_needs(str(args.get("needs") or "data"),
+                                                  str(args.get("question") or text))
+                    question = str(args.get("question") or text)
+                    if needs == "reasoning":
+                        # Send the transcript, not the model's paraphrase. Measured:
+                        # asked "FSPL at 440 MHz over 10 kilometres" the 3B restated it
+                        # without the distance and the cloud correctly answered for
+                        # 1 km (85.32 dB instead of 105.3). A paraphrase may drop a
+                        # parameter; the user's words cannot.
+                        if question.strip() != text.strip():
+                            log(f"[turn {turn}] reasoning uses the transcript, not the "
+                                f"restatement (was {question[:70]!r})")
+                        answered = await self._cloud_answer(text)
+                        if answered:
+                            spoken, stats = answered
+                            if self._looks_like_hedge(spoken):
+                                # the cloud cannot see the owner's records either;
+                                # that is the agent's job, and worth the wait
+                                log(f"[turn {turn}] cloud answer was a refusal "
+                                    f"({spoken[:60]!r}) -> agent lane")
+                            else:
+                                log(f"[turn {turn}] escalated to the cloud lane "
+                                    f"(reasoning): {spoken[:80]!r} {stats}")
+                                return spoken, None, "escalated (reasoning)"
+                        else:
+                            log(f"[turn {turn}] reasoning escalation unavailable; "
+                                f"falling back to the agent lane")
+                    return "", {"question": question, "needs": needs}, f"handoff ({needs})"
                 if name.startswith("music_"):
                     result = await self._run_music_tool(turn, name, args)
                 else:

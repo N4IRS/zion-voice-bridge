@@ -1081,6 +1081,45 @@ a pile of per-question special cases.
 
 ---
 
+### 8.7.1 Two escalations, not one — data vs reasoning
+
+The escalation ladder was wrong in a way that only showed once Muse was answering.
+There are two different escalations, and they go to different places:
+
+| the question needs | destination | evidence |
+|---|---|---|
+| **the owner's own state** — notes, lists, tasks, project history, accounts | **Muse**, over the bus, announced later (30-60 s is *appropriate*) | *"what's on my list for tomorrow?"*, *"where did we leave the duplexer order?"* |
+| **calculation or world knowledge** | **cloud lane**, in-turn (~1 s) | *"what ERP from 100 W into 6 dBd?"* → 400 W in 1.3 s; *"FSPL at 440 MHz over 10 km?"* → 105.3 dB |
+
+Muse is not a bigger model. She is the only holder of the PDA's state, which is why
+no provider can be substituted for her — and equally why she should never be asked to
+do arithmetic. Before this split, *"what ERP do I get from 100 W into 6 dBd"* waited
+**35 seconds** for an agent that had nothing to add, when the cloud lane answers it in
+one.
+
+**How the decision is made.** The `handoff` tool gained a `needs` field
+(`data` | `reasoning`), and the bridge overrides a `data` label when the question is
+plainly computation — a quantity unit (dB, SWR, ERP, watts, impedance, wavelength,
+MHz, feet…) or a how-many/how-much carrying a number. The 3B labelled the ERP question
+`data` on the first try, which is exactly why the override exists rather than trusting
+the model.
+
+**Two failure modes, both measured, both now fixed:**
+
+- **A mislabel in the data direction costs 35 s; in the reasoning direction it costs
+  nothing.** If the cloud lane's reply is itself a refusal (*"I don't have access to
+  your records"*) the turn falls back to the agent instead of speaking it. So the
+  cascade is: fast lane first, agent only when the fast lane says it cannot know.
+- **Never send a paraphrase to the reasoning lane.** Asked *"FSPL at 440 MHz over 10
+  kilometres"*, the 3B restated it *without the distance* and the cloud correctly
+  answered **85.32 dB for 1 km** instead of 105.3. Reasoning escalations now send the
+  transcript verbatim — a paraphrase can drop a parameter, the user's words cannot —
+  and the two are logged when they differ.
+
+Hedge routing follows the same split: *"I need Muse"* is a data deferral and goes to
+her; *"I don't have real-time information"* is a knowledge gap and goes to the cloud
+lane first.
+
 ### 8.8 Conversation memory — the bridge owns it
 
 Every turn was stateless: Ollama keeps nothing, and the bus has no session concept,
