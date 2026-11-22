@@ -104,6 +104,11 @@ def make_handoff(question: str, *, device: str = "satellite", from_agent: str = 
         "conversation": conversation or "",
         "request": {"question": question.strip(), "voice": True,
                     "max_words": int(max_words), "hint": hint,
+                    # optional speaking-style hint. Added 2026-11-21 as a drift
+                    # probe: an adopting agent whose prompt predates it should
+                    # notice the unknown field and consult /schema.json rather
+                    # than guess. Currently always "plain" and safe to ignore.
+                    "tone": "plain",
                     "context": [c for c in (context or [])][-6:]},
     }
 
@@ -231,7 +236,11 @@ def schema_summary() -> dict:
             "required": ["v", "type", "id", "created_at", "ttl_s", "from", "to",
                          "device.name", "reply_to.agent", "request.question"],
             "optional": ["reply_to.bus_id", "conversation", "request.context",
-                         "request.max_words", "request.hint"],
+                         "request.max_words", "request.hint", "request.tone"],
+            "field_notes": {
+                "request.tone": "optional speaking-style hint, currently always "
+                                "'plain'; safe to ignore, added 2026-11-21",
+            },
             "request_context": "list of {role, text}, oldest first, max 6 entries",
         },
         "answer": {
