@@ -166,6 +166,43 @@ class HttpLane(Lane):
         msgs.append({"role": "user", "content": text})
         return msgs
 
+    async def stream_chat(self, messages: list[dict], tools: list[dict] | None = None):
+        """Yield text deltas as the model produces them (SSE), for streaming TTS.
+
+        Tool calls are deliberately not supported here: streaming is only used on the
+        final answer, after any tool round trip has already happened non-streamed.
+        """
+        session = await self._get_session()
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        payload = {
+            "model": self.model, "messages": messages, "stream": True,
+            "max_tokens": self.max_tokens, "temperature": self.temperature,
+        }
+        if tools:
+            payload["tools"] = tools
+        async with session.post(f"{self.base_url}/chat/completions",
+                                json=payload, headers=headers) as resp:
+            if resp.status != 200:
+                raise LaneError(f"{self.name}: HTTP {resp.status}: "
+                                f"{(await resp.text())[:200]}")
+            async for raw in resp.content:
+                line = raw.decode("utf-8", "ignore").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                for choice in chunk.get("choices") or []:
+                    piece = (choice.get("delta") or {}).get("content")
+                    if piece:
+                        yield piece
+
     async def ask(self, text: str, history: list[dict] | None = None,
                   tools: list[dict] | None = None) -> Reply:
         return await self.chat(self._messages(text, history), tools=tools)

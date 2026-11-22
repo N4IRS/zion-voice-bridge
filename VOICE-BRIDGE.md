@@ -1213,6 +1213,54 @@ turn that used a tool, on the assumption the numbers came from the tool.
 the answer appears in the tool output, rounding allowed (`81.4` from `81.446` is fine,
 `84` from a date is not).
 
+### 8.7.3 Streaming TTS — what was possible, and what was built
+
+**First, the measurement that decided the design.** The obvious approach — serve a
+growing HTTP response and let the controller play as bytes arrive — does not work
+here. `stream_probe.py` served a WAV whose body was written slowly (1.5 s of audio,
+a 4 s gap, 1.5 s more):
+
+```
+0.01  GET arrives, first 1.5 s sent
+4.08  second 1.5 s sent, EOF
+10:34:14.868  "Streaming 288000 bytes (70 periods)"   ← 4.2 s after the GET
+```
+
+The controller **buffers the whole fetch, decodes it, then streams to the device.**
+Nothing is heard early, so a growing response buys nothing at all.
+
+**The only shape that works is one announcement per sentence**, and its cost is
+small: a 1.5 s clip announced twice takes 3.46 s, i.e. **0.23 s of overhead per
+announcement**. So the bridge streams tokens from the model (SSE), cuts at sentence
+boundaries, hands **sentence 1 back as the turn's reply immediately** (so the normal
+TTS_END path plays it), and announces the remaining sentences as they land, retrying
+while the controller is busy with the first.
+
+Measured, local lane:
+
+| reply | sentence 1 handed over | full text finished | saved |
+|---|---|---|---|
+| 2 sentences (folded dipole) | **6.11 s** | 11.26 s | **5.15 s** |
+| 1 sentence (what is a balun) | 3.13 s | 3.29 s | 0 — identical to before |
+
+That second row is why this is safe to leave on by default: a one-sentence reply
+produces exactly one announcement-worth of work, so nothing is added.
+
+**A design mistake caught in the first test, worth recording.** The first version
+collected the whole stream and *then* returned the first sentence — 11.81 s instead of
+6.27 s, i.e. all the gain thrown away at the last step. Returning early is the entire
+feature.
+
+**Constraints, deliberately:**
+
+- **Only when no tools are offered.** A tool call can arrive mid-stream, and abandoning
+  a half-spoken answer to run a lookup is worse than waiting for the whole reply.
+- **Remaining sentences are announcements**, so the controller records the turn as a
+  reply of sentence 1 only. Its per-turn metrics under-report a long answer; ours do
+  not.
+- The sentence splitter requires ≥4 words before cutting, so "e.g." and abbreviations
+  do not become announcements of one word.
+
 ### 8.8 Conversation memory — the bridge owns it
 
 Every turn was stateless: Ollama keeps nothing, and the bus has no session concept,

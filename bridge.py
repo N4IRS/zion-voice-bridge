@@ -379,6 +379,9 @@ def _covered_by(answer: str, tool_numbers: set[str]) -> bool:
     return True
 
 
+#: sentence boundary for streaming TTS: terminal punctuation followed by space or end
+SENTENCE_END = re.compile(r"[.!?](?:\s|$)")
+
 #: questions whose numbers come from the injected clock, not from the model
 CLOCK_QUESTION = re.compile(
     r"^(what|which)\s+(time|date|day)\b|what day is it|today'?s date|"
@@ -548,6 +551,7 @@ class Bridge:
         self.audio_s = 0.0
         self.in_turn = False
         self.announce_lock = asyncio.Lock()
+        self._bg_tasks: set[asyncio.Task] = set()
         self.poller: asyncio.Task | None = None
         self.pending: dict[str, dict] = {}
         self.pending_path = os.path.join(args.outdir, "pending-handoffs.json")
@@ -892,6 +896,9 @@ class Bridge:
         Serialised: two overlapping announcements stack the controller's duck
         layers and (measured) end with the device dropping its data plane.
         """
+        if self.client is None:
+            log("announce skipped: no controller connection")
+            return False
         async with self.announce_lock:
             return await self._announce_once(text)
 
@@ -1275,6 +1282,9 @@ class Bridge:
                 {"role": "user", "content": f"{text}\n\n[current local time: {context}]"})
         else:
             messages.append({"role": "user", "content": text})
+        if self.args.stream_tts and not tools:
+            return await self._answer_streaming(messages, turn, text)
+
         reply = None
         for step in range(3):
             try:
@@ -1423,6 +1433,87 @@ class Bridge:
         except (MaError, ValueError) as exc:
             log(f"[turn {turn}] music tool {name} refused: {exc}")
             return {"ok": False, "error": str(exc)}
+
+    async def _answer_streaming(self, messages: list[dict], turn: int, question: str):
+        """Hand back sentence 1 as soon as it exists; announce the rest as they arrive.
+
+        Measured: the controller BUFFERS its fetch (a growing HTTP body played only
+        after EOF), so "speak while fetching" is impossible here. Sentence-per-
+        announcement is the only shape, and it costs 0.23 s per announcement.
+
+        The point of returning the FIRST sentence rather than the whole reply: on a
+        3-sentence local answer the first sentence existed 5.5 s before the last, and
+        returning the full text would have thrown all of that away.
+        """
+        lane = self.brain.lanes.answer_lane(self.args.answer_lane)
+        queue: asyncio.Queue = asyncio.Queue()
+        speaker = asyncio.create_task(self._speak_queue(queue, turn))
+        self._bg_tasks.add(speaker)
+        speaker.add_done_callback(self._bg_tasks.discard)
+        holder: dict = {"first": None, "first_at": 0.0}
+        ready = asyncio.Event()
+
+        async def pump() -> None:
+            buf, started = "", time.monotonic()
+            try:
+                async for piece in lane.stream_chat(messages):
+                    buf += piece
+                    while True:
+                        match = SENTENCE_END.search(buf)
+                        if not match:
+                            break
+                        sentence, buf = buf[:match.end()].strip(), buf[match.end():]
+                        if len(sentence.split()) < 4:
+                            buf = sentence + " " + buf      # too short: keep buffering
+                            break
+                        if holder["first"] is None:
+                            holder["first"] = sentence
+                            holder["first_at"] = time.monotonic() - started
+                            log(f"[turn {turn}] sentence 1 at {holder['first_at']:.2f}s "
+                                f"handed over: {sentence[:50]!r}")
+                            ready.set()
+                        else:
+                            await queue.put(sentence)
+            except LaneError as exc:
+                log(f"[turn {turn}] stream failed after "
+                    f"{time.monotonic() - started:.2f}s: {exc}")
+            tail = buf.strip()
+            if tail:
+                if holder["first"] is None:
+                    holder["first"] = tail
+                    holder["first_at"] = time.monotonic() - started
+                else:
+                    await queue.put(tail)
+            log(f"[turn {turn}] stream finished at {time.monotonic() - started:.2f}s")
+            ready.set()
+            await queue.put(None)
+
+        task = asyncio.create_task(pump())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        await ready.wait()
+        if holder["first"] is None:
+            return ("Sorry, I didn't get an answer to that.", None, "stream-empty")
+        return holder["first"], None, f"streamed (sentence 1 at {holder['first_at']:.2f}s)"
+
+    async def _speak_queue(self, queue: asyncio.Queue, turn: int) -> None:
+        """Announce queued sentences in order, waiting out a busy device."""
+        while True:
+            sentence = await queue.get()
+            if sentence is None:
+                return
+            for attempt in range(6):
+                if await self._announce(sentence):
+                    break
+                await asyncio.sleep(0.4 * (attempt + 1))
+            else:
+                log(f"[turn {turn}] gave up announcing {sentence[:40]!r}")
+
+    async def _answer_no_stream(self, messages: list[dict], turn: int, question: str):
+        """Non-streamed fallback with the same tool handling as the normal path."""
+        lane = self.brain.lanes.answer_lane(self.args.answer_lane)
+        reply = await lane.chat(messages)
+        return reply.text, None, "stream-fallback"
 
     def _run_ha_tool(self, turn: int, name: str, args: dict) -> dict:
         if self.ha is None:
@@ -1632,6 +1723,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--music-target", default="Satellite-1",
                    help="default speaker when the request does not name one")
 
+    p.add_argument("--stream-tts", dest="stream_tts", action="store_true", default=True,
+                   help="speak the first sentence while the rest is still generating")
+    p.add_argument("--no-stream-tts", dest="stream_tts", action="store_false")
     p.add_argument("--verify-max-tokens", type=int, default=400,
                    help="room for the verifier to show its working before the ANSWER line")
     p.add_argument("--verify", choices=("off", "numbers", "always"), default="numbers",
