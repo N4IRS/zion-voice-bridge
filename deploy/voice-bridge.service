@@ -19,7 +19,8 @@ ExecStart=/opt/voice-bridge/.venv/bin/python /opt/voice-bridge/bridge.py \
     --muse --muse-agent muse --bus-url http://192.168.1.10:8765 \
     --handoff auto --handoff-poll-s 5 \
     --ha-url http://192.168.1.20:8123 \
-    --media-host 192.168.1.10
+    --media-host 192.168.1.10 \
+    --piper-voice /opt/voice-bridge/voices/en_US-hfc_female-medium.onnx
 # A missing controller or SDR means connect failure (exit 2); retry without
 # hot-looping, and give up until the next boot if it keeps failing.
 Restart=on-failure

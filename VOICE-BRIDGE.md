@@ -480,6 +480,32 @@ serves over HTTP on `:8700` and hands to the controller as the `TTS_END` URL.
 The controller decodes whatever the URL returns with ffmpeg and applies its output
 chain, so the bridge need not match 48 kHz stereo.
 
+### 7.4.1 Voice choice — `hfc_female`, measured
+
+Seven voices were rendered on the same sentence and compared; the deployed voice is
+`en_US-hfc_female-medium`.
+
+| voice | RTF | synthesis for a 5 s clip | note |
+|---|---|---|---|
+| `lessac-medium` (was deployed) | 0.03 | 0.2 s | clear but flat — good intelligibility, little expression |
+| `hfc_female-medium` (**now**) | 0.03 | 0.2 s | same cost, more expressive; also ~18% slower paced |
+| `lessac-high` | 0.16 | 1.0 s | 5× the cost for a marginal gain — not worth it |
+| `alba-medium` (GB) | 0.03 | 0.2 s | flattest pitch variation of the four Piper voices |
+| Kokoro `af_heart` / `am_michael` / `bf_emma` | **0.36** | 2.2 s | most natural of the set, 12× the synthesis cost |
+
+Kokoro-82M is the naturalness leader in the CPU class (it is what EchoMuse's own notes
+reference for streaming TTS), but at RTF 0.36 on this box it adds ~2 s **before** the
+Dot starts speaking, because the reply is synthesised whole rather than streamed. Fine
+for announcements; noticeable on quick local turns. It stays a documented option, not
+the default.
+
+An F0-variation proxy (median pitch and interquartile spread) was computed as a
+tiebreaker and then deliberately **not** used for the decision: it measures pitch
+movement, not naturalness, and it ranked hfc_female *and* Kokoro differently from how
+either sounds. Perceptual questions get perceptual answers — the samples were served
+and judged by ear on the real output chain (controller decode → EQ → limiter → Dot
+speaker).
+
 ### 7.5 Where the time actually goes
 
 | Stage | Local | Notes |
