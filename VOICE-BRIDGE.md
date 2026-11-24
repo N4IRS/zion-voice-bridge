@@ -162,7 +162,7 @@ the piece we wanted to replace.
 | Firmware | `emos-v0.10` (`v2.18.1`), armv7l, 3.18.19 kernel — replaces FireOS |
 | Second satellite | `Satellite-2` (Satellite-2, .195, port 16002) — **offline** since 2026-11-06 |
 | Host | ThinkStation, Xeon E5-2637 v3, 16 threads, 94 GB RAM |
-| GPU | AMD FirePro W2100 — **unused and unusable** for any of this; everything is CPU |
+| GPU | AMD FirePro W2100 (`1002:6608`, Oland/GCN 1.0, 2014, **discrete** — this Xeon has no iGPU). Present and **not usable for inference**: bound to the legacy `radeon` driver and RADV needs `amdgpu` (`amdgpu.si_support=1` + reboot); `renderD128` is `root:render` and the service user is not in `render`; no ROCm (never supported Oland) and no OpenCL ICD; GCN 1.0 has no INT8 dot product, which is the format whisper runs in. All inference is CPU-only **by hardware**, not by configuration. |
 | Home Assistant | separate box, 192.168.1.20:8123, HAOS, **2026.11.0** (formerly the backend) |
 
 ### 3.2 Software already running on the host (not built by us)
@@ -184,7 +184,9 @@ the piece we wanted to replace.
 | `qwen2.5:3b` | 2.23 GB | Q4_K_M | Ollama | **13.5–14.9 tok/s** generation, ~34–36 tok/s prompt eval |
 | `qwen2.5:7b` | 4.68 GB | Q4_K_M | Ollama | **4.4 tok/s** generation |
 | `nomic-embed-text` | 0.27 GB | F16 | Ollama | (not used here) |
-| whisper `base.en` | ~74 MB | int8 (ctranslate2) | `~/.cache` via faster-whisper | 0.6–0.9 s per 2.5–3.4 s utterance |
+| whisper `small.en` (**deployed**) | ~250 MB | int8 (ctranslate2) | `~/.cache` via faster-whisper | **1.6–2.2 s per 3–4 s utterance**, flat with length (§8.15) |
+| whisper `base.en` (retired) | ~74 MB | int8 | same | 0.6–0.9 s, but **unstable**: four different transcripts for one sentence (§8.15) |
+| whisper `distil-small.en` (tested, not deployed) | ~350 MB | int8 | same | equal to `small.en` on 3–4 s utterances (1.6–2.1 s), ~1.8× **faster on 10 s** audio; no accuracy gain, so not worth the switch (§8.15) |
 | Silero VAD | ~2 MB | ONNX | bundled with faster-whisper | 0.19 s CPU per 20 s of audio |
 | Piper `en_US-hfc_female-medium` (**deployed**) | 63 MB | ONNX | `voices/` | RTF 0.03 (~5 s of speech in ~0.15 s) |
 | Piper `en_US-lessac-medium`, `-high`, `alba`, Kokoro-82M | — | — | `voices/`, `/tmp` | measured for §7.4.1; not deployed |
@@ -413,20 +415,27 @@ threshold is not.
 Cost: 0.19 s of CPU for 20 s of audio (two threads' worth of one core, essentially
 free).
 
-### 7.2 Speech to text — faster-whisper `base.en`, int8
+### 7.2 Speech to text — faster-whisper `small.en`, int8
 
 Fed raw 16 kHz PCM as a numpy array (never as a file — see the PyAV trap in §12).
-Beam size 1, `language="en"`, VAD filter on. 0.6–0.9 s for a 2.5–3.4 s utterance;
-0.62 s for a 20 s capture. `small.en` is available and slower; `base.en` has been
-correct on every clean utterance so far, and its errors have been *reference*
-errors ("your muse" for "you're Muse"), not comprehension failures.
+Beam size 1, `language="en"`, VAD filter on. **1.6–2.2 s per 3–4 s utterance, flat with
+length** — 3.3 s, 4.3 s and 7.2 s clips all measured 1.55–2.2 s, because the encoder
+dominates. `cpu_threads=16` measured *slower* than 8 (2.1–2.6 s), so it stays at 8.
 
-**Proper nouns are the fragile part.** The vocabulary prompt fixed *"impedance"*, and
-the same mechanism was needed for names: on a live turn **"Muse" was decoded as
-"news"**, so the hand-off asked her about a news icon. `Muse`, `Zion`, `Clippy` and
-`Satellite` now sit in `ASR_PROMPT` beside the RF terms — the assistant's own name (and
-its counterpart's) appear in nearly every hand-off, which makes them the highest-value
-words in the vocabulary.
+`base.en` (0.6–0.9 s) was the original choice and was **retired on 2026-11-22** (§8.15):
+on one live utterance it produced four different transcripts across runs — *"S mu is
+what I must schedule"*, *"Ask news what's on my schedule"*, *"Ask me what's on my
+schedule"* — and the model then answered the nonsense. `small.en` returned the sentence
+every time. Stable transcripts are worth the extra second.
+
+**Proper nouns are still the fragile part, but the vocabulary prompt is no longer
+credited for fixing them.** `ASR_PROMPT` (RF terms plus `Zion, Muse, Clippy,
+Satellite`) measures **neutral**: identical text on two of four clips, one comma apart
+on a third. It is kept because it is free, not because it is proven to do work — the
+earlier *"Muse" decoded as "news"* failure disappeared in the same session that changed
+the model, so the two cannot be separated with the clips we still have.
+`distil-small.en` was measured as the speed lever and saved nothing at this utterance
+length (§8.15).
 
 ### 7.3 Language model — Ollama, `qwen2.5:3b`
 
@@ -568,7 +577,7 @@ change rather than a rewrite.
 ### 8.1 Mode 1 — fully local (current)
 
 ```
---llm --tts --model qwen2.5:3b      whisper base.en + Piper lessac
+--llm --tts --model qwen2.5:3b      whisper small.en + Piper hfc_female
 ```
 
 Nothing leaves the LAN at runtime. The only internet contact in the whole project
@@ -1466,11 +1475,13 @@ it?"* produced the literal text `handoff needs='data'`, escalated to Muse, and t
 arrived **37 s later** ("Today is Sunday, November 22, 2026."). That question now costs
 0.7 s and never leaves the house.
 
-**What is left of the 795 ms is Whisper** — 684 ms of it, 86 %, against 108 ms of Piper.
-That is the next lever if a turn ever needs to feel faster, and it is a model choice
-(`base.en` here), not a plumbing problem. The 1.7 s between the wake word and "speech
-start" is the VAD listening while the person is still talking, so it is not latency
-anyone waits through.
+**What was left of that 795 ms was Whisper** — 684 ms of it, 86 %, against 108 ms of
+Piper. That measurement was on `base.en`, which has since been replaced by `small.en`
+for correctness (§8.15), so the same turn now spends ~1.9 s in STT and totals ~2.1 s.
+That is the dominant cost of every turn, and §3.1 records why there is no GPU path to
+cut it: the only accelerator in the box is a 2014 card on the legacy `radeon` driver
+with no INT8 support. The 1.7 s between the wake word and "speech start" is the VAD
+listening while the person is still talking, so it is not latency anyone waits through.
 
 `calc.py` covers the formulas this bench actually gets asked, each with a known-value
 test so "correct" is defined before anything moves:
@@ -1615,8 +1626,20 @@ confidence to −0.248 — tempting. But the short list (proper nouns only) prod
 *"Yes, Muse was on my schedule."* and on junk audio the bias **injected** our vocabulary
 into non-speech ("and they… there's a very good point of work" became *"Music
 Assistant."*). A decode that depends on the exact contents of a hint list is a lottery,
-not a fix. `--initial-prompt` is worse still: it turned the bad clip into *"Yes, Muse was
-on my schedule."*
+not a fix. `--initial-prompt` was not the culprit either, contrary to the first draft of this
+section: that attribution came from a *long hotword-style list* tested on `base.en`. The
+prompt the bridge actually ships (`ASR_PROMPT`, §7.2) measures **neutral** on `small.en`
+— identical transcripts on two of four clips, one comma apart on a third — so it stays,
+with no claim that it is doing work. The instability belonged to `base.en`, not the
+prompt.
+
+**`distil-small.en` was tried as the CPU speed lever, and rejected.** With the iGPU ruled
+out (§3.1), the only remaining way to cut the ~1.9 s was a smaller decoder. Measured on
+the same clips: 3–4 s utterances 1.6–2.1 s (equal to `small.en`), while 10 s of audio
+ran about 1.8× faster (2.5 s vs 4.8 s). Our utterances are 3–4 s, where the encoder
+dominates and the savings vanish, so it buys nothing and adds a 350 MB model and an
+unmeasured accuracy delta on English proper nouns — the exact thing §8.15 is about. The
+weights are in the HF cache; `HF_HUB_OFFLINE=1` means nothing loads them.
 
 **3. The bridge answered the mishearing, and separately spoke a tool call as text.**
 With hand-off off there is no Muse tool, so `qwen2.5:3b` writes `handoff needs='data'` as
@@ -1751,7 +1774,7 @@ Useful flags:
 | `--port` | satellite port (16001 for Satellite-1) |
 | `--stt` / `--llm` / `--tts` | enable stages independently; no `--tts` = a chime answers |
 | `--model` | Ollama model (`qwen2.5:3b`, `qwen2.5:7b`) |
-| `--whisper-model` | `base.en` (default), `small.en`, … |
+| `--whisper-model` | `small.en` (default), `base.en`, `distil-small.en`, … |
 | `--piper-voice` | path to a Piper `.onnx` |
 | `--silence-ms` / `--min-speech-ms` | endpointing behaviour |
 | `--media-port` / `--media-host` | where reply WAVs are served (must be reachable by the controller) |
@@ -1820,7 +1843,8 @@ python3 -m venv .venv
 
 # 2. models
 docker exec ollama-p700 ollama pull qwen2.5:3b        # or via the API
-# whisper base.en downloads itself on first use (~74 MB)
+# whisper small.en must be in the cache before the service starts: the unit sets
+# HF_HUB_OFFLINE=1, so fetch it once with that unset (~250 MB)
 
 # 3. a Piper voice (63 MB)
 mkdir -p voices
@@ -1911,6 +1935,10 @@ What genuinely remains:
   about the house reaches the tools with wrong words. This is the largest remaining
   correctness risk in the system, and it is not a model-size problem that a flag fixes:
   `base.en` was worse *and* unstable, and hotwords turned out to be a lottery (§8.15).
+- **Transcription latency has a hardware floor of ~1.6 s.** There is no GPU path on
+  this box (§3.1) and `distil-small.en` saved nothing at our utterance length (§8.15),
+  so `small.en` on CPU is the floor. A turn is therefore ~2 s before any model is
+  involved; the only remaining lever is a different host.
 - **The confidence gate does not work.** Re-hearing a low-confidence transcript with a
   bigger model was tried and abandoned: the worst good transcript measured −0.634 and
   the best bad one −0.715, which is too close to threshold (§8.15). The machinery is in
